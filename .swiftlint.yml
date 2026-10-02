@@ -1,0 +1,21 @@
+disabled_rules:
+  - trailing_whitespace
+  - trailing_comma
+  - nesting
+  - cyclomatic_complexity
+  - file_length
+  - todo
+  - function_parameter_count
+  - opening_brace
+  - line_length
+identifier_name:
+  min_length:
+    error: 1
+    warning: 1
+  max_length:
+    warning: 60
+    error: 80
+type_name:
+  min_length:
+    error: 1
+    warning: 1

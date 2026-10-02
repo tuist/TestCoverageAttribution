@@ -1,0 +1,42 @@
+name: TestCoverageAttribution
+
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+
+env:
+  MISE_EXPERIMENTAL: "1"
+
+concurrency:
+  group: test-coverage-attribution-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Release build on macOS"
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
+      - uses: jdx/mise-action@v2
+      - run: mise run build
+
+  test:
+    name: "Test on macOS"
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
+      - uses: jdx/mise-action@v2
+      - run: mise run test
+
+  lint:
+    name: Lint
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
+      - uses: jdx/mise-action@v2
+      - run: mise run lint

@@ -1,0 +1,5 @@
+#!/bin/bash
+#MISE description="Test the package: runs the fixture package's tests with SwiftPM and xcodebuild and reads back what was recorded"
+set -euo pipefail
+
+swift test --package-path "$MISE_PROJECT_ROOT"
