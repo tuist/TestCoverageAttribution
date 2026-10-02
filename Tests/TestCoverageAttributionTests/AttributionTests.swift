@@ -56,6 +56,17 @@ struct AttributionTests {
         #expect(tests.map(\.overlapped) == [true, true])
     }
 
+    /// Once no scope is active the overlap is over: a scope that starts after it is clean again.
+    @Test func clearsTheOverlapOnceNoScopeIsActive() throws {
+        let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "ScopeSequenceTests")
+        let scopes = records.filter { $0.kind == .swiftTesting && $0.suite == "ScopeSequenceTests" }
+
+        #expect(scopes.map { "\($0.name): \($0.overlapped ? "overlapped" : "clean")" } == [
+            "a: overlapped", "b: overlapped", "c: clean",
+        ])
+        #expect(scopes.last?.counters.isEmpty == false)
+    }
+
     /// The trait on a suite and on a suite nested in it opens one scope per test, not one per trait.
     @Test func recordsOneScopePerTestWhenNestedSuitesBothHaveTheTrait() throws {
         let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "Outer")
