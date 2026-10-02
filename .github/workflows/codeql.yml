@@ -48,8 +48,18 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended
-      - if: matrix.build-mode == 'manual'
+      - if: matrix.language == 'swift'
         run: swift build
+      # The tracer misses the clang that SwiftPM spawns, so compile the Objective-C sources with
+      # Xcode's clang directly.
+      - if: matrix.language == 'c-cpp'
+        run: |
+          clang=$(xcrun --find clang)
+          sdk=$(xcrun --show-sdk-path)
+          for source in $(git ls-files 'Sources/*.m'); do
+            "$clang" -fobjc-arc -fmodules -isysroot "$sdk" -I Sources/TestCoverageAttributionObserver/include \
+              -c "$source" -o "$RUNNER_TEMP/$(basename "$source").o"
+          done
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:${{ matrix.language }}
