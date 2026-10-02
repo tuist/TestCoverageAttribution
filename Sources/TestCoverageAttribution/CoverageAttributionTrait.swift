@@ -15,6 +15,10 @@ import Testing
 /// is left out. Use `.serialized` on the suite or `-parallel-testing-enabled NO`. When the run
 /// collects no attribution, the trait does nothing.
 public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
+    /// Whether a scope is already open around the running test case: a test in a suite nested in
+    /// another that has the trait gets it once from each, and two scopes would mark it overlapped.
+    @TaskLocal private static var isInScope = false
+
     public var isRecursive: Bool {
         true
     }
@@ -24,7 +28,7 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
         testCase: Test.Case?,
         performing function: @Sendable () async throws -> Void
     ) async throws {
-        guard testCase != nil else {
+        guard testCase != nil, !Self.isInScope else {
             try await function()
             return
         }
@@ -36,7 +40,9 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
         let name = test.displayName ?? components.last ?? test.name
         test_coverage_attribution_scope_begin(module, suite, name)
         defer { test_coverage_attribution_scope_end(module, suite, name) }
-        try await function()
+        try await Self.$isInScope.withValue(true) {
+            try await function()
+        }
     }
 }
 

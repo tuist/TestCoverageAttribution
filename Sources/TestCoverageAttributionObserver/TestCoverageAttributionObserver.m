@@ -55,6 +55,7 @@ static uint64_t *scratch_deltas;
 static size_t scratch_len;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned active_scopes;
+static bool scopes_overlapped;
 static char bundle_name[NAME_MAX];
 
 static const uint8_t *section(const struct mach_header_64 *h, const char *name, unsigned long *size) {
@@ -177,9 +178,11 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
     fflush(records);
 }
 
-// Swift Testing runs tests concurrently unless the scheme or the suite serializes them. A
-// scope that starts or ends while another is active holds the other test's work too, so it is
-// marked overlapped and whoever reads the records leaves it out of per-test evidence.
+// Swift Testing runs tests concurrently unless the scheme or the suite serializes them. Scopes
+// that run at the same time share one snapshot, so each holds the others' work and misses its
+// own from before the last one ended: once a scope starts while another is active, every scope
+// that ends until none is active is marked overlapped, and whoever reads the records leaves it
+// out of per-test evidence.
 static void scope_begin(const char *module, const char *suite, const char *name) {
     pthread_mutex_lock(&lock);
     if (records) {
@@ -187,6 +190,8 @@ static void scope_begin(const char *module, const char *suite, const char *name)
         if (active_scopes == 0) {
             write_record(kRecordGap, 0, module, suite, "");
             take_snapshot();
+        } else {
+            scopes_overlapped = true;
         }
         active_scopes++;
     }
@@ -196,8 +201,9 @@ static void scope_begin(const char *module, const char *suite, const char *name)
 static void scope_end(const char *module, const char *suite, const char *name) {
     pthread_mutex_lock(&lock);
     if (records && active_scopes > 0) {
-        write_record(kRecordSwiftTesting, active_scopes > 1 ? kFlagOverlapped : 0, module, suite, name);
+        write_record(kRecordSwiftTesting, scopes_overlapped ? kFlagOverlapped : 0, module, suite, name);
         active_scopes--;
+        if (active_scopes == 0) scopes_overlapped = false;
         take_snapshot();
     }
     pthread_mutex_unlock(&lock);
