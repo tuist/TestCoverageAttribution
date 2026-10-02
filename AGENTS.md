@@ -5,7 +5,7 @@ A Swift package that test targets link to record which coverage counters each te
 ## Layout
 - `Sources/TestCoverageAttributionObserver` - Objective-C, Foundation only. XCTest is looked up at run time (class, protocol and selectors by name), so nothing links XCTest. It reads each instrumented image's `__llvm_prf_cnts` directly and never calls the LLVM profile runtime. Registers its XCTest observer from a constructor when the test bundle loads.
 - `Sources/TestCoverageAttribution` - the Swift Testing trait (`.coverageAttribution`) that calls `test_coverage_attribution_scope_begin/end` around each test.
-- `Tests/TestCoverageAttributionTests` - runs `Fixtures/Example` with SwiftPM and xcodebuild with attribution on, and parses `records.bin` (`Records.swift` mirrors the layout).
+- `Tests/TestCoverageAttributionTests` - runs `Fixtures/Example` with SwiftPM and xcodebuild with attribution on, and parses `records.bin` (`Records.swift` mirrors the layout). `Fixtures/Concurrency` holds the overlapping and nested-trait cases in a package of their own, since Swift Testing runs suites in parallel across the process.
 
 ## Rules
 - Never crash or block the test process: every failure path returns and the tests run as if nothing were linked.

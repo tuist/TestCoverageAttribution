@@ -46,14 +46,42 @@ struct AttributionTests {
         #expect(try runFixture(.swiftPM, attributing: false).isEmpty)
     }
 
-    private func runFixture(_ runner: Runner, attributing: Bool) throws -> [Record] {
+    /// Two tests that run at the same time are both marked overlapped, including the one that
+    /// ends last, whose record would otherwise miss what it ran before the other ended.
+    @Test func marksEveryOverlappingTestAsOverlapped() throws {
+        let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "OverlapTests")
+        let tests = records.filter { $0.kind == .swiftTesting && $0.suite == "OverlapTests" }
+
+        #expect(tests.map(\.name).sorted() == ["first()", "second()"])
+        #expect(tests.map(\.overlapped) == [true, true])
+    }
+
+    /// The trait on a suite and on a suite nested in it opens one scope per test, not one per trait.
+    @Test func recordsOneScopePerTestWhenNestedSuitesBothHaveTheTrait() throws {
+        let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "Outer")
+        let tests = records.filter { $0.kind == .swiftTesting && $0.name == "nested()" }
+
+        try #require(tests.count == 1)
+        #expect(!tests[0].overlapped)
+        #expect(!tests[0].counters.isEmpty)
+    }
+
+    /// Runs one of the packages under `Fixtures`; with SwiftPM, only the tests `filter` matches.
+    /// `Concurrency` is a package of its own: Swift Testing runs suites in parallel across the
+    /// process, so its tests would overlap the others.
+    private func runFixture(
+        _ runner: Runner,
+        attributing: Bool,
+        fixture name: String = "Example",
+        filter: String? = nil
+    ) throws -> [Record] {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let output = scratch.appending(path: "output")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
-        let fixture = Self.packageRoot.appending(path: "Fixtures/Example")
-        let build = Self.packageRoot.appending(path: ".build/fixtures/Example")
+        let fixture = Self.packageRoot.appending(path: "Fixtures/\(name)")
+        let build = Self.packageRoot.appending(path: ".build/fixtures/\(name)")
         var environment = ProcessInfo.processInfo.environment
         environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
@@ -66,12 +94,12 @@ struct AttributionTests {
             process.arguments = [
                 "swift", "test", "--package-path", fixture.path(), "--scratch-path", build.appending(path: "swiftpm").path(),
                 "--enable-code-coverage",
-            ]
+            ] + (filter.map { ["--filter", $0] } ?? [])
         case .xcodebuild:
             environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
             process.currentDirectoryURL = fixture
             process.arguments = [
-                "xcodebuild", "test", "-scheme", "Example-Package", "-destination", "platform=macOS",
+                "xcodebuild", "test", "-scheme", "\(name)-Package", "-destination", "platform=macOS",
                 "-derivedDataPath", build.appending(path: "xcode").path(), "-enableCodeCoverage", "YES", "-quiet",
             ]
         }
