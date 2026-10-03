@@ -70,7 +70,16 @@ struct AttributionTests {
     /// When part of an image can't be written the observer removes what it wrote for the process,
     /// so a reader finds no output instead of records whose counters it can't map to functions.
     @Test func removesTheOutputWhenAnImageCannotBeWritten() throws {
-        #expect(try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "OutputFailureTests").isEmpty)
+        var processes: [Set<String>] = []
+        let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "OutputFailureTests") {
+            processes = try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)
+                .map { try Set(FileManager.default.contentsOfDirectory(atPath: $0.path())) }
+        }
+
+        // The fixture's test ran: it left `0.names` as a directory in its process, and the observer
+        // removed what it had written there.
+        #expect(processes.contains { $0.contains("0.names") && !$0.contains("images.tsv") && !$0.contains("records.bin") })
+        #expect(records.isEmpty)
     }
 
     /// The trait on a suite and on a suite nested in it opens one scope per test, not one per trait.
@@ -84,13 +93,15 @@ struct AttributionTests {
     }
 
     /// Runs one of the packages under `Fixtures`; with SwiftPM, only the tests `filter` matches.
+    /// `inspect` gets the output directory before it is removed.
     /// `Concurrency` is a package of its own: Swift Testing runs suites in parallel across the
     /// process, so its tests would overlap the others.
     private func runFixture(
         _ runner: Runner,
         attributing: Bool,
         fixture name: String = "Example",
-        filter: String? = nil
+        filter: String? = nil,
+        inspect: (URL) throws -> Void = { _ in }
     ) throws -> [Record] {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -131,6 +142,7 @@ struct AttributionTests {
         try handle.close()
         let logContents = String(decoding: try Data(contentsOf: log), as: UTF8.self)
         try #require(process.terminationStatus == 0, "swift test failed:\n\(logContents)")
+        try inspect(output)
         return try Record.all(in: output)
     }
 }
