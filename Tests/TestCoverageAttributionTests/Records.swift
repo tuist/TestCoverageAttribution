@@ -16,13 +16,32 @@ struct Record: Equatable {
     let name: String
     /// The counters that moved, by image index: each counter's index and by how much it moved.
     let counters: [UInt32: [UInt32: UInt64]]
+    /// The functions those counters belong to, as `__llvm_prf_names` names them: mangled for
+    /// Swift. Filled in by `all(in:)`, which has the images.
+    var functions: Set<String> = []
 
-    /// Every record the observer wrote under `directory`, one subdirectory per process.
+    /// Whether a function whose name contains `fragment` ran in this scope.
+    func ran(_ fragment: String) -> Bool {
+        functions.contains { $0.contains(fragment) }
+    }
+
+    /// Every record the observer wrote under `directory`, one subdirectory per process, with the
+    /// functions its counters belong to.
     static func all(in directory: URL) throws -> [Record] {
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .map { $0.appending(path: "records.bin") }
-            .filter { FileManager.default.fileExists(atPath: $0.path()) }
-            .flatMap { try parse(Data(contentsOf: $0)) }
+            .filter { FileManager.default.fileExists(atPath: $0.appending(path: "records.bin").path()) }
+            .flatMap { process in
+                let records = try parse(Data(contentsOf: process.appending(path: "records.bin")))
+                guard !records.isEmpty else { return records }
+                let functions = try FunctionTable.all(in: process)
+                return records.map { record in
+                    var record = record
+                    for (image, counters) in record.counters {
+                        record.functions.formUnion(counters.keys.compactMap { functions[image]?[Int($0)] })
+                    }
+                    return record
+                }
+            }
     }
 
     static func parse(_ data: Data) throws -> [Record] {
@@ -84,6 +103,7 @@ private struct Reader {
 
     mutating func string() throws -> String {
         let length = Int(try uint32())
-        return String(decoding: try bytes(length), as: UTF8.self)
+        guard let string = String(bytes: try bytes(length), encoding: .utf8) else { throw Error.malformed }
+        return string
     }
 }

@@ -7,11 +7,13 @@ struct AttributionTests {
     private static let packageRoot = URL(filePath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    /// How the fixture's tests are run: SwiftPM, or Xcode, which links the package statically
-    /// into the test bundle and passes `TEST_RUNNER_`-prefixed variables to the test process.
+    /// How the fixture's tests are run: SwiftPM, or Xcode, on macOS or on an iOS simulator, which
+    /// links the package statically into the test bundle and passes `TEST_RUNNER_`-prefixed
+    /// variables to the test process.
     enum Runner: CaseIterable {
         case swiftPM
         case xcodebuild
+        case iOSSimulator
     }
 
     @Test(arguments: Runner.allCases)
@@ -36,14 +38,54 @@ struct AttributionTests {
         // XCTest names the bundle, which SwiftPM builds as one for every test target.
         #expect(add.module == (runner == .swiftPM ? "ExamplePackageTests" : "ExampleTests"))
         #expect(multiply.module == "ExampleTests")
-        // Each test moved its own counters: the early return runs only when multiplying by zero.
-        #expect(add.counters != multiply.counters)
+        // Each test ran the code it called and none it didn't (mangled `Calculator.add` and
+        // `Calculator.multiply`).
+        let calculatorAdd = "10CalculatorO3add"
+        let calculatorMultiply = "10CalculatorO8multiply"
+        #expect(add.ran(calculatorAdd) && !add.ran(calculatorMultiply))
+        #expect(xcTestOnly.ran(calculatorAdd) && !xcTestOnly.ran(calculatorMultiply))
+        #expect(multiply.ran(calculatorMultiply) && !multiply.ran(calculatorAdd))
+        #expect(byZero.ran(calculatorMultiply) && !byZero.ran(calculatorAdd))
+        // The early return runs only when multiplying by zero.
         #expect(multiply.counters != byZero.counters)
     }
 
     /// Without the variable the fixture's tests pass as usual, and the observer had nowhere to write.
     @Test func runsTheTestsUnchangedWithoutAnOutputDirectory() throws {
         #expect(try runFixture(.swiftPM, attributing: false).isEmpty)
+    }
+
+    /// Recording never resets or writes the counters: SwiftPM's coverage report is the same, byte for
+    /// byte, with attribution on and off.
+    @Test func leavesTheCoverageReportUnchanged() throws {
+        _ = try runFixture(.swiftPM, attributing: false)
+        let report = try swiftPMCoverageReport()
+        #expect(try !runFixture(.swiftPM, attributing: true).isEmpty)
+        #expect(try swiftPMCoverageReport() == report)
+    }
+
+    /// Linked from a static archive, as Tuist links packages by default, an XCTest-only target
+    /// references nothing in the package, so the linker drops the observer unless the target links
+    /// with `-ObjC`, which loads every archive member that defines an Objective-C class.
+    @Test(arguments: [false, true])
+    func needsObjCToLinkTheObserverFromAStaticArchive(objC: Bool) throws {
+        let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let output = scratch.appending(path: "output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var environment = Self.cleanEnvironment
+        environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = output.path()
+
+        try Self.execute(
+            Self.packageRoot.appending(path: "Fixtures/StaticArchive/run.sh"),
+            [scratch.appending(path: "build").path(), objC ? "objc" : "no-objc"],
+            environment: environment,
+            log: scratch.appending(path: "run.log")
+        )
+
+        let test = try Record.all(in: output).first { $0.kind == .xcTest && $0.name == "testSum" }
+        #expect((test != nil) == objC)
+        #expect(test?.ran("3sum") ?? !objC)
     }
 
     /// Two tests that run at the same time are both marked overlapped, including the one that
@@ -110,29 +152,76 @@ struct AttributionTests {
 
         let fixture = Self.packageRoot.appending(path: "Fixtures/\(name)")
         let build = Self.packageRoot.appending(path: ".build/fixtures/\(name)")
-        var environment = ProcessInfo.processInfo.environment
-        environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
-        environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
-
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/xcrun")
+        var environment = Self.cleanEnvironment
+        let arguments: [String]
         switch runner {
         case .swiftPM:
             environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
-            process.arguments = [
+            arguments = [
                 "swift", "test", "--package-path", fixture.path(), "--scratch-path", build.appending(path: "swiftpm").path(),
                 "--enable-code-coverage",
             ] + (filter.map { ["--filter", $0] } ?? [])
-        case .xcodebuild:
+        case .xcodebuild, .iOSSimulator:
             environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
-            process.currentDirectoryURL = fixture
-            process.arguments = [
-                "xcodebuild", "test", "-scheme", "\(name)-Package", "-destination", "platform=macOS",
+            let destination = runner == .iOSSimulator ? "id=\(try Self.iPhoneSimulator())" : "platform=macOS"
+            arguments = [
+                "xcodebuild", "test", "-scheme", "\(name)-Package", "-destination", destination,
                 "-derivedDataPath", build.appending(path: "xcode").path(), "-enableCodeCoverage", "YES", "-quiet",
             ]
         }
+        try Self.execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            arguments,
+            environment: environment,
+            directory: fixture,
+            log: scratch.appending(path: "run.log")
+        )
+        try inspect(output)
+        return try Record.all(in: output)
+    }
+
+    /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
+    private func swiftPMCoverageReport() throws -> Data {
+        let log = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: log) }
+        try Self.execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            [
+                "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
+                "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
+                "--show-codecov-path",
+            ],
+            environment: Self.cleanEnvironment,
+            log: log
+        )
+        let output = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
+        let path = try #require(output.split(separator: "\n").last.map(String.init))
+        return try Data(contentsOf: URL(filePath: path))
+    }
+
+    /// This process's environment without the observer's variables, which the package's own test
+    /// run may have set.
+    private static var cleanEnvironment: [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
+        environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
+        environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
+        return environment
+    }
+
+    /// Runs `executable` and requires it to succeed, with its output in the failure.
+    private static func execute(
+        _ executable: URL,
+        _ arguments: [String],
+        environment: [String: String],
+        directory: URL? = nil,
+        log: URL
+    ) throws {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
         process.environment = environment
-        let log = scratch.appending(path: "swift-test.log")
+        process.currentDirectoryURL = directory
         FileManager.default.createFile(atPath: log.path(), contents: nil)
         let handle = try FileHandle(forWritingTo: log)
         process.standardOutput = handle
@@ -140,9 +229,39 @@ struct AttributionTests {
         try process.run()
         process.waitUntilExit()
         try handle.close()
-        let logContents = String(decoding: try Data(contentsOf: log), as: UTF8.self)
-        try #require(process.terminationStatus == 0, "swift test failed:\n\(logContents)")
-        try inspect(output)
-        return try Record.all(in: output)
+        let output = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
+        try #require(process.terminationStatus == 0, "\(executable.lastPathComponent) failed:\n\(output)")
+    }
+
+    /// An available iPhone simulator on the newest iOS runtime installed.
+    private static func iPhoneSimulator() throws -> String {
+        struct Devices: Decodable {
+            struct Device: Decodable {
+                let name: String
+                let udid: String
+            }
+
+            let devices: [String: [Device]]
+        }
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/xcrun")
+        process.arguments = ["simctl", "list", "devices", "available", "--json"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        // Runtimes are keyed `com.apple.CoreSimulator.SimRuntime.iOS-26-1`.
+        let version = { (runtime: String) -> [Int] in
+            runtime.components(separatedBy: "iOS-").last?.split(separator: "-").compactMap { Int($0) } ?? []
+        }
+        let iPhone = try JSONDecoder().decode(Devices.self, from: data).devices
+            .filter { $0.key.contains(".iOS-") }
+            .sorted { version($0.key).lexicographicallyPrecedes(version($1.key)) }
+            .reversed()
+            .lazy
+            .compactMap { $0.value.first { $0.name.hasPrefix("iPhone") } }
+            .first
+        return try #require(iPhone, "No iPhone simulator is available").udid
     }
 }

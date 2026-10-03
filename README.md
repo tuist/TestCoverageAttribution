@@ -95,6 +95,6 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 
 ```bash
 mise run build
-mise run test   # runs Fixtures/Example with SwiftPM and xcodebuild, and Fixtures/Concurrency with SwiftPM, and checks the records
+mise run test   # runs the packages under Fixtures (SwiftPM, xcodebuild on macOS and an iOS simulator) and checks the records
 mise run lint
 ```
