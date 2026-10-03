@@ -87,7 +87,7 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 ## Guarantees
 
 - It never resets or writes the coverage counters: Xcode's own coverage report is unchanged.
-- It never crashes or blocks the tests. Every failure path stops recording and lets the tests run.
+- It never crashes or blocks the tests. Any failure stops recording, removes what it wrote for the process so a reader never gets partial output, and lets the tests run.
 - Only one copy records per process. If the package ends up linked more than once into the same process, for example into two test bundles loaded by the same host, the first copy to load does the recording and the others forward to it.
 - Images loaded after the first test starts, such as a framework the tests `dlopen` late, are not observed.
 

@@ -67,6 +67,12 @@ struct AttributionTests {
         #expect(scopes.last?.counters.isEmpty == false)
     }
 
+    /// When part of an image can't be written the observer removes what it wrote for the process,
+    /// so a reader finds no output instead of records whose counters it can't map to functions.
+    @Test func removesTheOutputWhenAnImageCannotBeWritten() throws {
+        #expect(try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "OutputFailureTests").isEmpty)
+    }
+
     /// The trait on a suite and on a suite nested in it opens one scope per test, not one per trait.
     @Test func recordsOneScopePerTestWhenNestedSuitesBothHaveTheTrait() throws {
         let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "Outer")

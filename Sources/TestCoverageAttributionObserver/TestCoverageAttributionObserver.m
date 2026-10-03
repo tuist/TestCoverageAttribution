@@ -33,6 +33,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 enum { kRecordGap = 0, kRecordXCTest = 1, kRecordSwiftTesting = 2 };
 enum { kFlagOverlapped = 1 };
@@ -65,16 +66,31 @@ static const uint8_t *section(const struct mach_header_64 *h, const char *name, 
     return p;
 }
 
-static void dump_section(const struct mach_header_64 *h, const char *name, unsigned index, const char *extension) {
+// Recording stops at the first thing that fails, and what was written for the process is removed:
+// a reader then finds no output for it, rather than records whose counters it can't map, which
+// would read as tests that ran nothing. The tests run on as if nothing were linked.
+static void stop_recording(void) {
+    if (!records) return;
+    fclose(records);
+    records = NULL;
+    char file[PATH_MAX];
+    snprintf(file, sizeof file, "%s/images.tsv", out_dir);
+    unlink(file);
+    snprintf(file, sizeof file, "%s/records.bin", out_dir);
+    unlink(file);
+}
+
+// Whether the section is written in full; an image without it has nothing to write.
+static bool dump_section(const struct mach_header_64 *h, const char *name, unsigned index, const char *extension) {
     unsigned long size = 0;
     const uint8_t *p = section(h, name, &size);
-    if (!p) return;
+    if (!p) return true;
     char file[PATH_MAX];
     snprintf(file, sizeof file, "%s/%u.%s", out_dir, index, extension);
     FILE *f = fopen(file, "wb");
-    if (!f) return;
-    fwrite(p, 1, size, f);
-    fclose(f);
+    if (!f) return false;
+    bool written = fwrite(p, 1, size, f) == size;
+    return fclose(f) == 0 && written;
 }
 
 // Images loaded after the first scope (a framework the tests dlopen late) are not picked up;
@@ -83,12 +99,12 @@ static void discover_images(void) {
     if (images_discovered) return;
     images_discovered = true;
     unsigned n = _dyld_image_count();
-    images = calloc(n, sizeof(instrumented_image));
+    images = calloc(n ? n : 1, sizeof(instrumented_image));
     char file[PATH_MAX];
     snprintf(file, sizeof file, "%s/images.tsv", out_dir);
-    FILE *f = fopen(file, "w");
-    if (!f) return;
-    for (unsigned i = 0; i < n; i++) {
+    FILE *f = images ? fopen(file, "w") : NULL;
+    bool ok = f != NULL;
+    for (unsigned i = 0; ok && i < n; i++) {
         const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(i);
         if (!h || h->magic != MH_MAGIC_64) continue;
         unsigned long size = 0;
@@ -101,18 +117,23 @@ static void discover_images(void) {
         img->counters = (uint64_t *)cnts;
         img->snapshot = malloc(size);
         img->counters_size = size;
-        if (!img->snapshot) continue;
-        fprintf(f, "%u\t%lu\t%llu\t%llu\t%s\n", images_count, size, (unsigned long long)(uintptr_t)data,
-                (unsigned long long)(uintptr_t)cnts, _dyld_get_image_name(i));
-        dump_section(h, "__llvm_prf_data", images_count, "data");
-        dump_section(h, "__llvm_prf_names", images_count, "names");
+        ok = img->snapshot
+            && fprintf(f, "%u\t%lu\t%llu\t%llu\t%s\n", images_count, size, (unsigned long long)(uintptr_t)data,
+                       (unsigned long long)(uintptr_t)cnts, _dyld_get_image_name(i)) >= 0
+            && dump_section(h, "__llvm_prf_data", images_count, "data")
+            && dump_section(h, "__llvm_prf_names", images_count, "names");
+        if (!ok) break;
         size_t words = size / sizeof(uint64_t);
         if (words > scratch_len) scratch_len = words;
         images_count++;
     }
-    fclose(f);
-    scratch = malloc(scratch_len * sizeof(uint32_t));
-    scratch_deltas = malloc(scratch_len * sizeof(uint64_t));
+    if (f && fclose(f) != 0) ok = false;
+    if (ok) {
+        scratch = malloc((scratch_len ? scratch_len : 1) * sizeof(uint32_t));
+        scratch_deltas = malloc((scratch_len ? scratch_len : 1) * sizeof(uint64_t));
+        ok = scratch && scratch_deltas;
+    }
+    if (!ok) stop_recording();
 }
 
 static void take_snapshot(void) {
@@ -148,6 +169,10 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
     write_string(suite);
     write_string(name);
     long count_position = ftell(records);
+    if (count_position < 0) {
+        stop_recording();
+        return;
+    }
     uint32_t touched_images = 0;
     fwrite(&touched_images, sizeof touched_images, 1, records);
     for (unsigned i = 0; i < images_count; i++) {
@@ -171,11 +196,14 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
     }
     if (touched_images) {
         long end = ftell(records);
-        fseek(records, count_position, SEEK_SET);
-        fwrite(&touched_images, sizeof touched_images, 1, records);
-        fseek(records, end, SEEK_SET);
+        if (end < 0 || fseek(records, count_position, SEEK_SET) != 0
+            || fwrite(&touched_images, sizeof touched_images, 1, records) != 1 || fseek(records, end, SEEK_SET) != 0) {
+            stop_recording();
+            return;
+        }
     }
-    fflush(records);
+    // The stream's error flag sticks, so it also reports any write above that failed.
+    if (fflush(records) != 0 || ferror(records)) stop_recording();
 }
 
 // Swift Testing runs tests concurrently unless the scheme or the suite serializes them. Scopes
