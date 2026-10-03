@@ -29,7 +29,7 @@ In an Xcode project, add the package and add `TestCoverageAttribution` to the te
 
 When the package is linked as a static library or a static framework, as Tuist's Xcode project integration of packages does by default, add `-ObjC` to the test target's `OTHER_LDFLAGS`. An XCTest-only target references nothing in the package, so the linker drops the observer without it. SwiftPM and Xcode's own package integration link the package's object files directly and need nothing.
 
-The package supports Apple platforms only.
+The package records on Apple platforms only. Elsewhere, such as Linux, it builds and does nothing, so a cross-platform test target can link it unconditionally.
 
 ## Usage
 
