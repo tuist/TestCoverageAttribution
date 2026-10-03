@@ -54,6 +54,9 @@ static FILE *records;
 static uint32_t *scratch;
 static uint64_t *scratch_deltas;
 static size_t scratch_len;
+static uint8_t *record_buffer;
+static size_t record_capacity;
+static size_t record_length;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned active_scopes;
 static bool scopes_overlapped;
@@ -142,10 +145,27 @@ static void take_snapshot(void) {
     }
 }
 
-static void write_string(const char *s) {
+// A record is built in memory and appended in one write, so whatever reaches the file is a prefix
+// of the finished record. A reader stops at a cut-off one; a record whose image count were written
+// before its images would read as a test that ran nothing.
+static bool append(const void *bytes, size_t size) {
+    if (size == 0) return true;
+    if (record_length + size > record_capacity) {
+        size_t capacity = record_capacity ? record_capacity : 4096;
+        while (capacity < record_length + size) capacity *= 2;
+        uint8_t *grown = realloc(record_buffer, capacity);
+        if (!grown) return false;
+        record_buffer = grown;
+        record_capacity = capacity;
+    }
+    memcpy(record_buffer + record_length, bytes, size);
+    record_length += size;
+    return true;
+}
+
+static bool append_string(const char *s) {
     uint32_t len = s ? (uint32_t)strlen(s) : 0;
-    fwrite(&len, sizeof len, 1, records);
-    if (len) fwrite(s, 1, len, records);
+    return append(&len, sizeof len) && append(s, len);
 }
 
 // Record: u8 kind, u8 flags, u8 version, u8 zero, then the length-prefixed (u32) module, suite
@@ -164,18 +184,12 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
     if (!records || !scratch || !scratch_deltas) return;
     if (kind == kRecordGap && !counters_changed()) return;
     uint8_t header[4] = {kind, flags, kRecordVersion, 0};
-    fwrite(header, 1, sizeof header, records);
-    write_string(module);
-    write_string(suite);
-    write_string(name);
-    long count_position = ftell(records);
-    if (count_position < 0) {
-        stop_recording();
-        return;
-    }
     uint32_t touched_images = 0;
-    fwrite(&touched_images, sizeof touched_images, 1, records);
-    for (unsigned i = 0; i < images_count; i++) {
+    record_length = 0;
+    bool ok = append(header, sizeof header) && append_string(module) && append_string(suite) && append_string(name);
+    size_t count_offset = record_length;
+    ok = ok && append(&touched_images, sizeof touched_images);
+    for (unsigned i = 0; ok && i < images_count; i++) {
         size_t words = images[i].counters_size / sizeof(uint64_t);
         const uint64_t *c = images[i].counters;
         const uint64_t *s = images[i].snapshot;
@@ -188,22 +202,15 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
         }
         if (count == 0) continue;
         uint32_t index = i;
-        fwrite(&index, sizeof index, 1, records);
-        fwrite(&count, sizeof count, 1, records);
-        fwrite(scratch, sizeof(uint32_t), count, records);
-        fwrite(scratch_deltas, sizeof(uint64_t), count, records);
+        ok = append(&index, sizeof index) && append(&count, sizeof count)
+            && append(scratch, count * sizeof(uint32_t)) && append(scratch_deltas, count * sizeof(uint64_t));
         touched_images++;
     }
-    if (touched_images) {
-        long end = ftell(records);
-        if (end < 0 || fseek(records, count_position, SEEK_SET) != 0
-            || fwrite(&touched_images, sizeof touched_images, 1, records) != 1 || fseek(records, end, SEEK_SET) != 0) {
-            stop_recording();
-            return;
-        }
+    if (ok) {
+        memcpy(record_buffer + count_offset, &touched_images, sizeof touched_images);
+        ok = fwrite(record_buffer, 1, record_length, records) == record_length && fflush(records) == 0;
     }
-    // The stream's error flag sticks, so it also reports any write above that failed.
-    if (fflush(records) != 0 || ferror(records)) stop_recording();
+    if (!ok) stop_recording();
 }
 
 // Swift Testing runs tests concurrently unless the scheme or the suite serializes them. Scopes
