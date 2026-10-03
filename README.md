@@ -41,7 +41,7 @@ The package records on Apple platforms only. Elsewhere, such as Linux, it builds
 import TestCoverageAttribution
 import Testing
 
-@Suite(.coverageAttribution, .serialized)
+@Suite(.coverageAttribution)
 struct CheckoutTests {
     @Test func appliesDiscount() { ... }
 }
@@ -57,10 +57,17 @@ Attribution needs the tests of a process to run one at a time. A test that runs 
 Nothing happens unless the test process sets `TEST_COVERAGE_ATTRIBUTION_DIR`. Without it, the tests run as if the package weren't linked, so a test target can link the package unconditionally.
 
 - **Tuist** sets the directory when a run collects coverage evidence.
-- **`xcodebuild`** passes it to the test process with the `TEST_RUNNER_` prefix: `TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR="$(mktemp -d)" xcodebuild test -enableCodeCoverage YES …`.
-- **`swift test`** reads it from the environment: `TEST_COVERAGE_ATTRIBUTION_DIR="$(mktemp -d)" swift test --enable-code-coverage`.
+- **`xcodebuild`** passes it to the test process with the `TEST_RUNNER_` prefix.
+- **`swift test`** reads it from the environment.
 
-Use a fresh directory, such as one from `mktemp -d`, rather than a fixed path in a shared `/tmp`.
+Use a fresh directory, such as one from `mktemp -d`, rather than a fixed path in a shared `/tmp`:
+
+```bash
+output=$(mktemp -d)
+TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR="$output" xcodebuild test -enableCodeCoverage YES -parallel-testing-enabled NO …
+TEST_COVERAGE_ATTRIBUTION_DIR="$output" swift test --enable-code-coverage --no-parallel
+ls "$output"   # one directory per test process
+```
 
 Code coverage must be enabled: without instrumentation there are no counters to observe.
 
