@@ -47,15 +47,20 @@ struct CheckoutTests {
 }
 ```
 
-Attribution needs the tests of a process to run one at a time. A test that overlaps another is marked as overlapped and left out of per-test attribution. Use `.serialized` on Swift Testing suites, or `-parallel-testing-enabled NO`.
+Attribution needs the tests of a process to run one at a time. A test that runs at the same time as another is marked as overlapped and left out of per-test attribution, so parallel runs lose evidence. `.serialized` only orders the tests of the suite it's on, and its nested suites: Swift Testing still runs other suites in parallel with it. To attribute every test, turn off parallel testing for the run, which also serializes Swift Testing:
+
+- `swift test --no-parallel`
+- `xcodebuild test -parallel-testing-enabled NO`
 
 ## When it records
 
 Nothing happens unless the test process sets `TEST_COVERAGE_ATTRIBUTION_DIR`. Without it, the tests run as if the package weren't linked, so a test target can link the package unconditionally.
 
 - **Tuist** sets the directory when a run collects coverage evidence.
-- **`xcodebuild`** passes it to the test process with the `TEST_RUNNER_` prefix: `TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR=/tmp/attribution xcodebuild test -enableCodeCoverage YES …`.
-- **`swift test`** reads it from the environment: `TEST_COVERAGE_ATTRIBUTION_DIR=/tmp/attribution swift test --enable-code-coverage`.
+- **`xcodebuild`** passes it to the test process with the `TEST_RUNNER_` prefix: `TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR="$(mktemp -d)" xcodebuild test -enableCodeCoverage YES …`.
+- **`swift test`** reads it from the environment: `TEST_COVERAGE_ATTRIBUTION_DIR="$(mktemp -d)" swift test --enable-code-coverage`.
+
+Use a fresh directory, such as one from `mktemp -d`, rather than a fixed path in a shared `/tmp`.
 
 Code coverage must be enabled: without instrumentation there are no counters to observe.
 
@@ -76,7 +81,7 @@ A scope is one of the following:
 - a Swift Testing test;
 - a *gap*: whatever ran between two tests, such as a class `setUp`, a suite's one-time setup, or leaked background work.
 
-Each record is laid out in little-endian as follows:
+Each record is laid out in the host's byte order, little-endian on every Apple platform, as follows:
 
 - `u8` kind (`0` gap, `1` XCTest, `2` Swift Testing), `u8` flags (`1` overlapped), `u8` version (currently `1`), `u8` zero.
 - The module, the suite and the test name, each a `u32` length followed by UTF-8 bytes. XCTest records name the test bundle as the module.
@@ -86,10 +91,16 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 
 ## Guarantees
 
-- It never resets or writes the coverage counters: Xcode's own coverage report is unchanged.
+- It never resets or writes the coverage counters: Xcode's and SwiftPM's own coverage reports are unchanged.
 - It never crashes or blocks the tests. Any failure stops recording, removes what it wrote for the process so a reader never gets partial output, and lets the tests run.
-- Only one copy records per process. If the package ends up linked more than once into the same process, for example into two test bundles loaded by the same host, the first copy to load does the recording and the others forward to it.
-- Images loaded after the first test starts, such as a framework the tests `dlopen` late, are not observed.
+- Only one copy records per process. If the package ends up linked more than once into the same process, for example into two test bundles loaded by the same host, the first copy to load does the recording and the others forward to it. The Objective-C runtime then logs `Class TestCoverageAttributionObserver is implemented in both …` once, which is harmless.
+
+## Limitations
+
+- **XCTest and Swift Testing run one after the other.** Xcode runs a process's XCTest tests first and its Swift Testing tests after them, and SwiftPM runs them in separate processes. Attribution relies on that: the two frameworks' tests are never checked for overlap with each other.
+- **UI tests record nothing about the app.** The code they exercise runs in the app's process, which doesn't link the package.
+- **Images loaded late aren't observed.** An image loaded after the first test starts, such as a framework the tests `dlopen`, is missing from the records.
+- **The package's own code shows up in the records.** Under xcodebuild, the observer is instrumented like the code under test, and the trait's code is instrumented everywhere. Their functions appear in the records, and a reader should ignore them.
 
 ## Development
 

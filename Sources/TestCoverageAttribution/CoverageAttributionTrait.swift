@@ -14,8 +14,9 @@ import Testing
 /// ```
 ///
 /// Attribution needs the tests of a process to run one at a time: a test that overlaps another
-/// is left out. Use `.serialized` on the suite or `-parallel-testing-enabled NO`. When the run
-/// collects no attribution, or off Apple platforms, the trait does nothing.
+/// is left out. `.serialized` orders only the suite's own tests, so turn off parallel testing for
+/// the run (`swift test --no-parallel`, `-parallel-testing-enabled NO`). When the run collects no
+/// attribution, or off Apple platforms, the trait does nothing.
 public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
     /// Whether a scope is already open around the running test case: a test in a suite nested in
     /// another that has the trait gets it once from each, and two scopes would mark it overlapped.
