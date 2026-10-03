@@ -148,10 +148,11 @@ static void take_snapshot(void) {
 // A record is built in memory and appended in one write, so whatever reaches the file is a prefix
 // of the finished record. A reader stops at a cut-off one; a record whose image count were written
 // before its images would read as a test that ran nothing.
+// The buffer is kept between records and starts small, so the tests' records exercise its growth.
 static bool append(const void *bytes, size_t size) {
     if (size == 0) return true;
     if (record_length + size > record_capacity) {
-        size_t capacity = record_capacity ? record_capacity : 4096;
+        size_t capacity = record_capacity ? record_capacity : 64;
         while (capacity < record_length + size) capacity *= 2;
         uint8_t *grown = realloc(record_buffer, capacity);
         if (!grown) return false;
