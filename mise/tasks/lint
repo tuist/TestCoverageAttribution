@@ -3,6 +3,23 @@
 #USAGE flag "-f --fix" help="Automatically fix linting issues where possible"
 set -eo pipefail
 
+# CodeQL doesn't support Objective-C, so the observer goes through clang's static analyzer. It
+# has no fixes to apply, so it runs in both modes. The C11 bounds-checked variants it suggests
+# for fprintf and sscanf don't exist on Apple platforms.
+analyze() {
+    local sdk
+    sdk=$(xcrun --show-sdk-path)
+    for source in $(git ls-files 'Sources/*.m'); do
+        xcrun clang --analyze -fobjc-arc -fmodules -isysroot "$sdk" \
+            -I Sources/TestCoverageAttributionObserver/include \
+            -Xanalyzer -analyzer-output=text \
+            -Xanalyzer -analyzer-checker=security,unix,nullability \
+            -Xanalyzer -analyzer-disable-checker=security.insecureAPI.DeprecatedOrUnsafeBufferHandling \
+            -Xclang -analyzer-werror \
+            "$source" -o /dev/null
+    done
+}
+
 if [ "$usage_fix" = "true" ]; then
     swiftformat .
     swiftlint lint --fix --quiet --config .swiftlint.yml Sources Tests Fixtures
@@ -10,3 +27,4 @@ else
     swiftformat . --lint
     swiftlint lint --quiet --config .swiftlint.yml Sources Tests Fixtures
 fi
+analyze
