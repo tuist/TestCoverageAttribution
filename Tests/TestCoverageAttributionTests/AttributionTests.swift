@@ -163,7 +163,7 @@ struct AttributionTests {
             ] + (filter.map { ["--filter", $0] } ?? [])
         case .xcodebuild, .iOSSimulator:
             environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
-            let destination = runner == .iOSSimulator ? "id=\(try Self.iPhoneSimulator())" : "platform=macOS"
+            let destination = runner == .iOSSimulator ? "id=\(try Self.iPhoneSimulator(fixture: fixture))" : "platform=macOS"
             arguments = [
                 "xcodebuild", "test", "-scheme", "\(name)-Package", "-destination", destination,
                 "-derivedDataPath", build.appending(path: "xcode").path(), "-enableCodeCoverage", "YES", "-quiet",
@@ -233,35 +233,24 @@ struct AttributionTests {
         try #require(process.terminationStatus == 0, "\(executable.lastPathComponent) failed:\n\(output)")
     }
 
-    /// An available iPhone simulator on the newest iOS runtime installed.
-    private static func iPhoneSimulator() throws -> String {
-        struct Devices: Decodable {
-            struct Device: Decodable {
-                let name: String
-                let udid: String
-            }
-
-            let devices: [String: [Device]]
+    /// An iPhone simulator the selected Xcode can run. Xcode lists only those its iOS platform
+    /// supports, which `simctl` doesn't: a runner can have runtimes installed for other Xcodes.
+    private static func iPhoneSimulator(fixture: URL) throws -> String {
+        let log = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: log) }
+        try execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            ["xcodebuild", "-showdestinations", "-scheme", "\(fixture.lastPathComponent)-Package"],
+            environment: cleanEnvironment,
+            directory: fixture,
+            log: log
+        )
+        // `{ platform:iOS Simulator, arch:arm64, id:<UDID>, OS:26.2, name:iPhone 17 }`
+        let destinations = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
+        let iPhone = destinations.split(separator: "\n").first {
+            $0.contains("platform:iOS Simulator") && $0.contains("name:iPhone") && !$0.contains("error:")
         }
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "list", "devices", "available", "--json"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        // Runtimes are keyed `com.apple.CoreSimulator.SimRuntime.iOS-26-1`.
-        let version = { (runtime: String) -> [Int] in
-            runtime.components(separatedBy: "iOS-").last?.split(separator: "-").compactMap { Int($0) } ?? []
-        }
-        let iPhone = try JSONDecoder().decode(Devices.self, from: data).devices
-            .filter { $0.key.contains(".iOS-") }
-            .sorted { version($0.key).lexicographicallyPrecedes(version($1.key)) }
-            .reversed()
-            .lazy
-            .compactMap { $0.value.first { $0.name.hasPrefix("iPhone") } }
-            .first
-        return try #require(iPhone, "No iPhone simulator is available").udid
+        let id = iPhone?.split(separator: ", ").first { $0.hasPrefix("id:") }?.dropFirst(3)
+        return try #require(id.map(String.init), "The selected Xcode has no iPhone simulator:\n\(destinations)")
     }
 }
