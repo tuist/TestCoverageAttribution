@@ -33,6 +33,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 enum { kRecordGap = 0, kRecordXCTest = 1, kRecordSwiftTesting = 2 };
 enum { kFlagOverlapped = 1 };
@@ -53,6 +54,9 @@ static FILE *records;
 static uint32_t *scratch;
 static uint64_t *scratch_deltas;
 static size_t scratch_len;
+static uint8_t *record_buffer;
+static size_t record_capacity;
+static size_t record_length;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned active_scopes;
 static bool scopes_overlapped;
@@ -65,16 +69,31 @@ static const uint8_t *section(const struct mach_header_64 *h, const char *name, 
     return p;
 }
 
-static void dump_section(const struct mach_header_64 *h, const char *name, unsigned index, const char *extension) {
+// Recording stops at the first thing that fails, and what was written for the process is removed:
+// a reader then finds no output for it, rather than records whose counters it can't map, which
+// would read as tests that ran nothing. The tests run on as if nothing were linked.
+static void stop_recording(void) {
+    if (!records) return;
+    fclose(records);
+    records = NULL;
+    char file[PATH_MAX];
+    snprintf(file, sizeof file, "%s/images.tsv", out_dir);
+    unlink(file);
+    snprintf(file, sizeof file, "%s/records.bin", out_dir);
+    unlink(file);
+}
+
+// Whether the section is written in full; an image without it has nothing to write.
+static bool dump_section(const struct mach_header_64 *h, const char *name, unsigned index, const char *extension) {
     unsigned long size = 0;
     const uint8_t *p = section(h, name, &size);
-    if (!p) return;
+    if (!p) return true;
     char file[PATH_MAX];
     snprintf(file, sizeof file, "%s/%u.%s", out_dir, index, extension);
     FILE *f = fopen(file, "wb");
-    if (!f) return;
-    fwrite(p, 1, size, f);
-    fclose(f);
+    if (!f) return false;
+    bool written = fwrite(p, 1, size, f) == size;
+    return fclose(f) == 0 && written;
 }
 
 // Images loaded after the first scope (a framework the tests dlopen late) are not picked up;
@@ -83,12 +102,12 @@ static void discover_images(void) {
     if (images_discovered) return;
     images_discovered = true;
     unsigned n = _dyld_image_count();
-    images = calloc(n, sizeof(instrumented_image));
+    images = calloc(n ? n : 1, sizeof(instrumented_image));
     char file[PATH_MAX];
     snprintf(file, sizeof file, "%s/images.tsv", out_dir);
-    FILE *f = fopen(file, "w");
-    if (!f) return;
-    for (unsigned i = 0; i < n; i++) {
+    FILE *f = images ? fopen(file, "w") : NULL;
+    bool ok = f != NULL;
+    for (unsigned i = 0; ok && i < n; i++) {
         const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(i);
         if (!h || h->magic != MH_MAGIC_64) continue;
         unsigned long size = 0;
@@ -101,18 +120,23 @@ static void discover_images(void) {
         img->counters = (uint64_t *)cnts;
         img->snapshot = malloc(size);
         img->counters_size = size;
-        if (!img->snapshot) continue;
-        fprintf(f, "%u\t%lu\t%llu\t%llu\t%s\n", images_count, size, (unsigned long long)(uintptr_t)data,
-                (unsigned long long)(uintptr_t)cnts, _dyld_get_image_name(i));
-        dump_section(h, "__llvm_prf_data", images_count, "data");
-        dump_section(h, "__llvm_prf_names", images_count, "names");
+        ok = img->snapshot
+            && fprintf(f, "%u\t%lu\t%llu\t%llu\t%s\n", images_count, size, (unsigned long long)(uintptr_t)data,
+                       (unsigned long long)(uintptr_t)cnts, _dyld_get_image_name(i)) >= 0
+            && dump_section(h, "__llvm_prf_data", images_count, "data")
+            && dump_section(h, "__llvm_prf_names", images_count, "names");
+        if (!ok) break;
         size_t words = size / sizeof(uint64_t);
         if (words > scratch_len) scratch_len = words;
         images_count++;
     }
-    fclose(f);
-    scratch = malloc(scratch_len * sizeof(uint32_t));
-    scratch_deltas = malloc(scratch_len * sizeof(uint64_t));
+    if (f && fclose(f) != 0) ok = false;
+    if (ok) {
+        scratch = malloc((scratch_len ? scratch_len : 1) * sizeof(uint32_t));
+        scratch_deltas = malloc((scratch_len ? scratch_len : 1) * sizeof(uint64_t));
+        ok = scratch && scratch_deltas;
+    }
+    if (!ok) stop_recording();
 }
 
 static void take_snapshot(void) {
@@ -121,10 +145,28 @@ static void take_snapshot(void) {
     }
 }
 
-static void write_string(const char *s) {
+// A record is built in memory and appended in one write, so whatever reaches the file is a prefix
+// of the finished record. A reader stops at a cut-off one; a record whose image count were written
+// before its images would read as a test that ran nothing.
+// The buffer is kept between records and starts small, so the tests' records exercise its growth.
+static bool append(const void *bytes, size_t size) {
+    if (size == 0) return true;
+    if (record_length + size > record_capacity) {
+        size_t capacity = record_capacity ? record_capacity : 64;
+        while (capacity < record_length + size) capacity *= 2;
+        uint8_t *grown = realloc(record_buffer, capacity);
+        if (!grown) return false;
+        record_buffer = grown;
+        record_capacity = capacity;
+    }
+    memcpy(record_buffer + record_length, bytes, size);
+    record_length += size;
+    return true;
+}
+
+static bool append_string(const char *s) {
     uint32_t len = s ? (uint32_t)strlen(s) : 0;
-    fwrite(&len, sizeof len, 1, records);
-    if (len) fwrite(s, 1, len, records);
+    return append(&len, sizeof len) && append(s, len);
 }
 
 // Record: u8 kind, u8 flags, u8 version, u8 zero, then the length-prefixed (u32) module, suite
@@ -143,14 +185,12 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
     if (!records || !scratch || !scratch_deltas) return;
     if (kind == kRecordGap && !counters_changed()) return;
     uint8_t header[4] = {kind, flags, kRecordVersion, 0};
-    fwrite(header, 1, sizeof header, records);
-    write_string(module);
-    write_string(suite);
-    write_string(name);
-    long count_position = ftell(records);
     uint32_t touched_images = 0;
-    fwrite(&touched_images, sizeof touched_images, 1, records);
-    for (unsigned i = 0; i < images_count; i++) {
+    record_length = 0;
+    bool ok = append(header, sizeof header) && append_string(module) && append_string(suite) && append_string(name);
+    size_t count_offset = record_length;
+    ok = ok && append(&touched_images, sizeof touched_images);
+    for (unsigned i = 0; ok && i < images_count; i++) {
         size_t words = images[i].counters_size / sizeof(uint64_t);
         const uint64_t *c = images[i].counters;
         const uint64_t *s = images[i].snapshot;
@@ -163,19 +203,15 @@ static void write_record(uint8_t kind, uint8_t flags, const char *module, const 
         }
         if (count == 0) continue;
         uint32_t index = i;
-        fwrite(&index, sizeof index, 1, records);
-        fwrite(&count, sizeof count, 1, records);
-        fwrite(scratch, sizeof(uint32_t), count, records);
-        fwrite(scratch_deltas, sizeof(uint64_t), count, records);
+        ok = append(&index, sizeof index) && append(&count, sizeof count)
+            && append(scratch, count * sizeof(uint32_t)) && append(scratch_deltas, count * sizeof(uint64_t));
         touched_images++;
     }
-    if (touched_images) {
-        long end = ftell(records);
-        fseek(records, count_position, SEEK_SET);
-        fwrite(&touched_images, sizeof touched_images, 1, records);
-        fseek(records, end, SEEK_SET);
+    if (ok) {
+        memcpy(record_buffer + count_offset, &touched_images, sizeof touched_images);
+        ok = fwrite(record_buffer, 1, record_length, records) == record_length && fflush(records) == 0;
     }
-    fflush(records);
+    if (!ok) stop_recording();
 }
 
 // Swift Testing runs tests concurrently unless the scheme or the suite serializes them. Scopes
