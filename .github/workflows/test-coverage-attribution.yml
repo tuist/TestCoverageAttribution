@@ -40,6 +40,20 @@ jobs:
           version: 2026.10.0
       - run: mise run test
 
+  test-linux:
+    name: "Test on Linux"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with:
+          version: 2026.10.0
+          # The task runs in a Swift container; the lint tools aren't needed.
+          install: false
+      - run: mise run test-linux
+
   lint:
     name: Lint
     runs-on: macos-26
