@@ -19,6 +19,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ${{ matrix.runs-on }}
+    if: github.repository == 'tuist/TestCoverageAttribution'
     permissions:
       contents: read
       security-events: write
@@ -30,7 +31,8 @@ jobs:
           # traced build, which only macOS can run.
           - language: swift
             build-mode: manual
-            runs-on: macos-26
+            # Tuist Runners: the profile selects Xcode.
+            runs-on: tuist-macos-26-3
           - language: actions
             build-mode: none
             runs-on: ubuntu-latest
@@ -38,8 +40,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: matrix.build-mode == 'manual'
-        run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
       - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}

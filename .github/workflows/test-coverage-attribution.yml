@@ -13,15 +13,17 @@ concurrency:
   group: test-coverage-attribution-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# The macOS jobs run on Tuist Runners. The `tuist-macos-26-3` profile selects Xcode 26.3 (see
+# .xcode-version), so no job switches Xcode itself.
 jobs:
   build:
     name: "Release build on macOS"
-    runs-on: macos-26
+    runs-on: tuist-macos-26-3
+    if: github.repository == 'tuist/TestCoverageAttribution'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
           version: 2026.10.1
@@ -29,12 +31,12 @@ jobs:
 
   test:
     name: "Test on macOS"
-    runs-on: macos-26
+    runs-on: tuist-macos-26-3
+    if: github.repository == 'tuist/TestCoverageAttribution'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
           version: 2026.10.1
@@ -56,12 +58,12 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: macos-26
+    runs-on: tuist-macos-26-3
+    if: github.repository == 'tuist/TestCoverageAttribution'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sudo xcode-select -s /Applications/Xcode_$(cat .xcode-version).app
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
           version: 2026.10.1
