@@ -1,5 +1,7 @@
 # TestCoverageAttribution
 
+[![TestCoverageAttribution](https://github.com/tuist/TestCoverageAttribution/actions/workflows/test-coverage-attribution.yml/badge.svg)](https://github.com/tuist/TestCoverageAttribution/actions/workflows/test-coverage-attribution.yml)
+
 > [!WARNING]
 > This package is experimental and in early development. Its API, the environment variables it reads and the format of what it records may change without notice between versions, and it hasn't been tested beyond the cases in this repository. Don't depend on it for anything critical yet.
 
@@ -12,8 +14,10 @@ TestCoverageAttribution records which code each test executes. Xcode's code cove
 Add the package and link the `TestCoverageAttribution` product to your **test targets**. Never link it to an app target.
 
 ```swift
-.package(url: "https://github.com/tuist/TestCoverageAttribution", branch: "main"),
+.package(url: "https://github.com/tuist/TestCoverageAttribution", .upToNextMinor(from: "0.1.0")),
 ```
+
+While the package is at 0.x, a minor version can break its API or the format of what it records, so pin to the minor version.
 
 ```swift
 .testTarget(
@@ -116,3 +120,7 @@ mise run build
 mise run test   # runs the packages under Fixtures (SwiftPM, xcodebuild on macOS and an iOS simulator) and checks the records
 mise run lint
 ```
+
+## License
+
+TestCoverageAttribution is released under the MIT license. See [LICENSE](LICENSE).
