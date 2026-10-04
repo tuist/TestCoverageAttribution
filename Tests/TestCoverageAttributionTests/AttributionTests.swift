@@ -238,15 +238,16 @@ struct AttributionTests {
     /// An iPhone simulator the selected Xcode can run, created if there is none: a runner image can
     /// have the iOS runtime without any simulator on it.
     private static func iPhoneSimulator(fixture: URL) throws -> String {
-        if let id = try listedIPhoneSimulator(fixture: fixture) { return id }
+        if let id = try listedIPhoneSimulator(fixture: fixture).id { return id }
         try createIPhoneSimulator()
-        let id = try listedIPhoneSimulator(fixture: fixture)
-        return try #require(id, "No iPhone simulator is available, even after creating one")
+        let (id, destinations) = try listedIPhoneSimulator(fixture: fixture)
+        return try #require(id, "No iPhone simulator is available, even after creating one:\n\(destinations)")
     }
 
-    /// The first iPhone simulator Xcode lists for the fixture. Xcode lists only those its iOS
-    /// platform supports, which `simctl` doesn't: a machine can have runtimes for other Xcodes.
-    private static func listedIPhoneSimulator(fixture: URL) throws -> String? {
+    /// The first iPhone simulator Xcode lists for the fixture, and everything it lists. Xcode lists
+    /// only those its iOS platform supports, which `simctl` doesn't: a machine can have runtimes for
+    /// other Xcodes.
+    private static func listedIPhoneSimulator(fixture: URL) throws -> (id: String?, destinations: String) {
         let destinations = try execute(
             URL(filePath: "/usr/bin/xcrun"),
             ["xcodebuild", "-showdestinations", "-scheme", "\(fixture.lastPathComponent)-Package"],
@@ -256,7 +257,8 @@ struct AttributionTests {
         let iPhone = destinations.split(separator: "\n").first {
             $0.contains("platform:iOS Simulator") && $0.contains("name:iPhone") && !$0.contains("error:")
         }
-        return iPhone?.split(separator: ", ").first { $0.hasPrefix("id:") }.map { String($0.dropFirst(3)) }
+        let id = iPhone?.split(separator: ", ").first { $0.hasPrefix("id:") }.map { String($0.dropFirst(3)) }
+        return (id, destinations)
     }
 
     /// Creates an iPhone simulator on the newest iOS runtime installed.
