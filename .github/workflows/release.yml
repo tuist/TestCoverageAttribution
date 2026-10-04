@@ -58,9 +58,11 @@ jobs:
         id: release-notes
         if: env.should-release == 'true'
         run: |
+          # Only the new version's section: no changelog header or footer, and titled with the
+          # version instead of "Unreleased".
           {
             echo "RELEASE_NOTES<<EOF"
-            git cliff --unreleased
+            git cliff --unreleased --tag "${{ steps.next-version.outputs.NEXT_VERSION }}" --strip all
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
       - name: Update CHANGELOG.md
