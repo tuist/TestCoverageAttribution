@@ -79,8 +79,7 @@ struct AttributionTests {
         try Self.execute(
             Self.packageRoot.appending(path: "Fixtures/StaticArchive/run.sh"),
             [scratch.appending(path: "build").path(), objC ? "objc" : "no-objc"],
-            environment: environment,
-            log: scratch.appending(path: "run.log")
+            environment: environment
         )
 
         let test = try Record.all(in: output).first { $0.kind == .xcTest && $0.name == "testSum" }
@@ -169,32 +168,22 @@ struct AttributionTests {
                 "-derivedDataPath", build.appending(path: "xcode").path(), "-enableCodeCoverage", "YES", "-quiet",
             ]
         }
-        try Self.execute(
-            URL(filePath: "/usr/bin/xcrun"),
-            arguments,
-            environment: environment,
-            directory: fixture,
-            log: scratch.appending(path: "run.log")
-        )
+        try Self.execute(URL(filePath: "/usr/bin/xcrun"), arguments, environment: environment, directory: fixture)
         try inspect(output)
         return try Record.all(in: output)
     }
 
     /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
     private func swiftPMCoverageReport() throws -> Data {
-        let log = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString).log")
-        defer { try? FileManager.default.removeItem(at: log) }
-        try Self.execute(
+        let output = try Self.execute(
             URL(filePath: "/usr/bin/xcrun"),
             [
                 "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
                 "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
                 "--show-codecov-path",
             ],
-            environment: Self.cleanEnvironment,
-            log: log
+            environment: Self.cleanEnvironment
         )
-        let output = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
         let path = try #require(output.split(separator: "\n").last.map(String.init))
         return try Data(contentsOf: URL(filePath: path))
     }
@@ -209,48 +198,98 @@ struct AttributionTests {
         return environment
     }
 
-    /// Runs `executable` and requires it to succeed, with its output in the failure.
+    /// Runs `executable`, requires it to succeed with its output in the failure, and returns what it
+    /// wrote to standard output.
+    @discardableResult
     private static func execute(
         _ executable: URL,
         _ arguments: [String],
-        environment: [String: String],
-        directory: URL? = nil,
-        log: URL
-    ) throws {
+        environment: [String: String] = cleanEnvironment,
+        directory: URL? = nil
+    ) throws -> String {
+        let logs = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: logs) }
+        let standardOutput = logs.appending(path: "stdout.log")
+        let standardError = logs.appending(path: "stderr.log")
+        FileManager.default.createFile(atPath: standardOutput.path(), contents: nil)
+        FileManager.default.createFile(atPath: standardError.path(), contents: nil)
+        let outputHandle = try FileHandle(forWritingTo: standardOutput)
+        let errorHandle = try FileHandle(forWritingTo: standardError)
+
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.environment = environment
         process.currentDirectoryURL = directory
-        FileManager.default.createFile(atPath: log.path(), contents: nil)
-        let handle = try FileHandle(forWritingTo: log)
-        process.standardOutput = handle
-        process.standardError = handle
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
         try process.run()
         process.waitUntilExit()
-        try handle.close()
-        let output = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
-        try #require(process.terminationStatus == 0, "\(executable.lastPathComponent) failed:\n\(output)")
+        try outputHandle.close()
+        try errorHandle.close()
+
+        let output = String(bytes: try Data(contentsOf: standardOutput), encoding: .utf8) ?? ""
+        let error = String(bytes: try Data(contentsOf: standardError), encoding: .utf8) ?? ""
+        try #require(process.terminationStatus == 0, "\(executable.lastPathComponent) failed:\n\(output)\n\(error)")
+        return output
     }
 
-    /// An iPhone simulator the selected Xcode can run. Xcode lists only those its iOS platform
-    /// supports, which `simctl` doesn't: a runner can have runtimes installed for other Xcodes.
+    /// An iPhone simulator the selected Xcode can run, created if there is none: a runner image can
+    /// have the iOS runtime without any simulator on it.
     private static func iPhoneSimulator(fixture: URL) throws -> String {
-        let log = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString).log")
-        defer { try? FileManager.default.removeItem(at: log) }
-        try execute(
+        if let id = try listedIPhoneSimulator(fixture: fixture) { return id }
+        try createIPhoneSimulator()
+        let id = try listedIPhoneSimulator(fixture: fixture)
+        return try #require(id, "No iPhone simulator is available, even after creating one")
+    }
+
+    /// The first iPhone simulator Xcode lists for the fixture. Xcode lists only those its iOS
+    /// platform supports, which `simctl` doesn't: a machine can have runtimes for other Xcodes.
+    private static func listedIPhoneSimulator(fixture: URL) throws -> String? {
+        let destinations = try execute(
             URL(filePath: "/usr/bin/xcrun"),
             ["xcodebuild", "-showdestinations", "-scheme", "\(fixture.lastPathComponent)-Package"],
-            environment: cleanEnvironment,
-            directory: fixture,
-            log: log
+            directory: fixture
         )
         // `{ platform:iOS Simulator, arch:arm64, id:<UDID>, OS:26.2, name:iPhone 17 }`
-        let destinations = String(bytes: try Data(contentsOf: log), encoding: .utf8) ?? ""
         let iPhone = destinations.split(separator: "\n").first {
             $0.contains("platform:iOS Simulator") && $0.contains("name:iPhone") && !$0.contains("error:")
         }
-        let id = iPhone?.split(separator: ", ").first { $0.hasPrefix("id:") }?.dropFirst(3)
-        return try #require(id.map(String.init), "The selected Xcode has no iPhone simulator:\n\(destinations)")
+        return iPhone?.split(separator: ", ").first { $0.hasPrefix("id:") }.map { String($0.dropFirst(3)) }
+    }
+
+    /// Creates an iPhone simulator on the newest iOS runtime installed.
+    private static func createIPhoneSimulator() throws {
+        struct Runtimes: Decodable {
+            struct Runtime: Decodable {
+                struct DeviceType: Decodable {
+                    let identifier: String
+                    let productFamily: String
+                }
+
+                let identifier: String
+                let platform: String
+                let version: String
+                let supportedDeviceTypes: [DeviceType]
+            }
+
+            let runtimes: [Runtime]
+        }
+        let json = try execute(URL(filePath: "/usr/bin/xcrun"), ["simctl", "list", "runtimes", "available", "--json"])
+        let runtime = try #require(
+            JSONDecoder().decode(Runtimes.self, from: Data(json.utf8)).runtimes
+                .filter { $0.platform == "iOS" }
+                .max { $0.version.compare($1.version, options: .numeric) == .orderedAscending },
+            "No iOS simulator runtime is installed"
+        )
+        let deviceType = try #require(
+            runtime.supportedDeviceTypes.first { $0.productFamily == "iPhone" },
+            "The iOS \(runtime.version) runtime supports no iPhone"
+        )
+        try execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            ["simctl", "create", "TestCoverageAttribution iPhone", deviceType.identifier, runtime.identifier]
+        )
     }
 }
