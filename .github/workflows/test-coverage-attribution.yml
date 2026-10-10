@@ -26,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
         with:
-          version: 2026.10.1
+          version: 2026.10.7
       - run: mise run build
 
   test:
@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
         with:
-          version: 2026.10.1
+          version: 2026.10.7
       - run: mise run test
 
   test-linux:
@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
         with:
-          version: 2026.10.1
+          version: 2026.10.7
           # The task runs in a Swift container; the lint tools aren't needed.
           install: false
       - run: mise run test-linux
@@ -66,5 +66,5 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
         with:
-          version: 2026.10.1
+          version: 2026.10.7
       - run: mise run lint
