@@ -23,6 +23,7 @@
 //   <n>.data       the image's raw __llvm_prf_data section
 //   <n>.names      the image's raw __llvm_prf_names section
 //   records.bin    one record per scope, see write_record()
+//   launches.tsv   one line per process a UI test launched, see record_launch()
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
@@ -61,6 +62,11 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned active_scopes;
 static bool scopes_overlapped;
 static char bundle_name[NAME_MAX];
+static FILE *launches;
+static bool launches_failed;
+static NSString *current_suite;
+static NSString *current_test;
+static NSMutableSet<NSNumber *> *scope_launches;
 
 static const uint8_t *section(const struct mach_header_64 *h, const char *name, unsigned long *size) {
     const uint8_t *p = getsectiondata(h, "__DATA", name, size);
@@ -245,6 +251,85 @@ static void scope_end(const char *module, const char *suite, const char *name) {
     pthread_mutex_unlock(&lock);
 }
 
+// UI tests: the app a test drives runs in a process of its own, which the observer can't see.
+// Xcode profiles that process on its own (`<uuid>-<pid>.profraw` beside the run's merged profile),
+// so recording which test launched which process is enough for a reader to attribute it. Each
+// time -[XCUIApplication launch] or -activate returns, the app's pid is appended to launches.tsv
+// as `pid\tmodule\tsuite\tname`: the running test, or an empty name for a launch outside one, such
+// as a class setUp. A pid is written once per scope, since activating a running app returns its pid
+// again. The pid comes from the private `processID` property; without it nothing is written.
+static void write_launch(pid_t pid) {
+    if (launches_failed || !out_dir[0]) return;
+    if (!launches) {
+        char file[PATH_MAX];
+        snprintf(file, sizeof file, "%s/launches.tsv", out_dir);
+        launches = fopen(file, "a");
+        if (!launches) {
+            launches_failed = true;
+            return;
+        }
+    }
+    const char *suite = current_suite.UTF8String ?: "";
+    const char *name = current_test.UTF8String ?: "";
+    if (fprintf(launches, "%d\t%s\t%s\t%s\n", pid, bundle_name, suite, name) < 0 || fflush(launches) != 0) {
+        fclose(launches);
+        launches = NULL;
+        launches_failed = true;
+    }
+}
+
+static void record_launch(id application) {
+    pid_t pid = 0;
+    @try {
+        pid = [[application valueForKey:@"processID"] intValue];
+    } @catch (NSException *exception) {
+        return;
+    }
+    if (pid <= 0) return;
+    pthread_mutex_lock(&lock);
+    if (!scope_launches) scope_launches = [NSMutableSet set];
+    if (![scope_launches containsObject:@(pid)]) {
+        [scope_launches addObject:@(pid)];
+        write_launch(pid);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+static IMP original_launch;
+static IMP original_activate;
+
+static void launch_hook(id self, SEL _cmd) {
+    ((void (*)(id, SEL))original_launch)(self, _cmd);
+    record_launch(self);
+}
+
+static void activate_hook(id self, SEL _cmd) {
+    ((void (*)(id, SEL))original_activate)(self, _cmd);
+    record_launch(self);
+}
+
+// The original is kept before the hook is installed, so a call racing the installation still has
+// one to forward to. A method the class inherits gets an override that forwards to the inherited one.
+static void hook(Class cls, NSString *selector_name, IMP replacement, IMP *original) {
+    SEL selector = NSSelectorFromString(selector_name);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return;
+    *original = method_getImplementation(method);
+    if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method))) {
+        method_setImplementation(method, replacement);
+    }
+}
+
+static void observe_launches(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class application = NSClassFromString(@"XCUIApplication");
+        if (!application) return;
+        hook(application, @"launch", (IMP)launch_hook, &original_launch);
+        hook(application, @"activate", (IMP)activate_hook, &original_activate);
+    });
+}
+
 // A process records through one copy of the library, the first to load: a second copy (another
 // test bundle, or a framework that links it too) would observe the same tests twice. The owner
 // publishes its scope functions in the environment, keyed by the process, and the other copies
@@ -297,6 +382,12 @@ static void split_xctest_name(NSString *name, NSString **suite, NSString **metho
     *method = [inner substringFromIndex:space.location + 1];
 }
 
+// The suites XCTest runs a class's tests in, as opposed to the bundle's and the run's.
+static bool is_class_suite(NSString *name) {
+    return name && ![name hasSuffix:@".xctest"] && ![name isEqualToString:@"All tests"]
+        && ![name isEqualToString:@"Selected tests"];
+}
+
 @interface TestCoverageAttributionObserver : NSObject
 @end
 
@@ -309,9 +400,12 @@ static void split_xctest_name(NSString *name, NSString **suite, NSString **metho
     discover_images();
     take_snapshot();
     pthread_mutex_unlock(&lock);
+    observe_launches();
 }
 
 - (void)testSuiteWillStart:(id)testSuite {
+    NSString *name = [testSuite name];
+    [self setScopeSuite:is_class_suite(name) ? name : nil test:nil];
     [self gapForSuite:nil];
 }
 
@@ -319,6 +413,7 @@ static void split_xctest_name(NSString *name, NSString **suite, NSString **metho
     NSString *suite, *method;
     split_xctest_name([testCase name], &suite, &method);
     [self gapForSuite:suite];
+    [self setScopeSuite:suite test:method];
 }
 
 - (void)testCaseDidFinish:(id)testCase {
@@ -328,15 +423,25 @@ static void split_xctest_name(NSString *name, NSString **suite, NSString **metho
     write_record(kRecordXCTest, 0, bundle_name, suite.UTF8String, method.UTF8String);
     take_snapshot();
     pthread_mutex_unlock(&lock);
+    [self setScopeSuite:suite test:nil];
 }
 
 - (void)testSuiteDidFinish:(id)testSuite {
     NSString *name = [testSuite name];
-    [self gapForSuite:[name hasSuffix:@".xctest"] || [name isEqualToString:@"All tests"] || [name isEqualToString:@"Selected tests"] ? nil : name];
+    [self gapForSuite:is_class_suite(name) ? name : nil];
+    [self setScopeSuite:nil test:nil];
 }
 
 - (void)testBundleDidFinish:(NSBundle *)testBundle {
     [self gapForSuite:nil];
+}
+
+- (void)setScopeSuite:(NSString *)suite test:(NSString *)test {
+    pthread_mutex_lock(&lock);
+    current_suite = suite;
+    current_test = test;
+    scope_launches = nil;
+    pthread_mutex_unlock(&lock);
 }
 
 - (void)gapForSuite:(NSString *)suite {

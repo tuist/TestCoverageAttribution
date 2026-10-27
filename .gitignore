@@ -1,3 +1,7 @@
 .build
 .swiftpm
 .claude
+# Generated from Fixtures/UITests/Project.swift by the tests.
+Fixtures/UITests/Derived
+Fixtures/UITests/*.xcodeproj
+Fixtures/UITests/*.xcworkspace

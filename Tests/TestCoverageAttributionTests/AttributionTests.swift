@@ -4,7 +4,7 @@ import Testing
 /// Runs the fixture package's tests with attribution on and reads back what the observer wrote.
 @Suite(.serialized, .timeLimit(.minutes(10)))
 struct AttributionTests {
-    private static let packageRoot = URL(filePath: #filePath)
+    static let packageRoot = URL(filePath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
     /// How the fixture's tests are run: SwiftPM, or Xcode, on macOS or on an iOS simulator, which
@@ -190,7 +190,7 @@ struct AttributionTests {
 
     /// This process's environment without the observer's variables, which the package's own test
     /// run may have set.
-    private static var cleanEnvironment: [String: String] {
+    static var cleanEnvironment: [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
@@ -201,7 +201,7 @@ struct AttributionTests {
     /// Runs `executable`, requires it to succeed with its output in the failure, and returns what it
     /// wrote to standard output.
     @discardableResult
-    private static func execute(
+    static func execute(
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String] = cleanEnvironment,
@@ -237,7 +237,7 @@ struct AttributionTests {
 
     /// An iPhone simulator the selected Xcode can run, created if there is none: a runner image can
     /// have the iOS runtime without any simulator on it.
-    private static func iPhoneSimulator(fixture: URL) throws -> String {
+    static func iPhoneSimulator(fixture: URL) throws -> String {
         if let id = try listedIPhoneSimulator(fixture: fixture).id {
             return id
         }

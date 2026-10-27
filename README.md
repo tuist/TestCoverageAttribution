@@ -51,6 +51,8 @@ struct CheckoutTests {
 }
 ```
 
+**UI tests** need nothing else either. The app a UI test drives runs in a process of its own, which the package can't observe, but Xcode profiles that process separately when code coverage is on. The package records which test launched which app process, so a reader such as Tuist can attribute the app's coverage to the test. See [`launches.tsv`](#output).
+
 Attribution needs the tests of a process to run one at a time. A test that runs at the same time as another is marked as overlapped and left out of per-test attribution, so parallel runs lose evidence. `.serialized` only orders the tests of the suite it's on, and its nested suites: Swift Testing still runs other suites in parallel with it. To attribute every test, turn off parallel testing for the run, which also serializes Swift Testing:
 
 - `swift test --no-parallel`
@@ -86,6 +88,7 @@ The output is written under `$TEST_COVERAGE_ATTRIBUTION_DIR/<pid>/`, one directo
 | `images.tsv` | One line per instrumented image: its index, the byte size of its counters, the addresses of its `__llvm_prf_data` and `__llvm_prf_cnts` sections, and its path. |
 | `<n>.data`, `<n>.names` | Image `n`'s raw `__llvm_prf_data` and `__llvm_prf_names` sections: what maps a counter to its function. |
 | `records.bin` | One record per scope. |
+| `launches.tsv` | One line per app process a UI test launched, written when `XCUIApplication.launch()` or `activate()` returns: the process's pid, the test bundle, the suite and the test, separated by tabs. A launch outside a test, such as in a class `setUp`, has an empty test name. A pid is listed once per test. Only written by a process that launches an app. |
 
 A scope is one of the following:
 - an XCTest test;
@@ -109,7 +112,7 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 ## Limitations
 
 - **XCTest and Swift Testing run one after the other.** Xcode runs a process's XCTest tests first and its Swift Testing tests after them, and SwiftPM runs them in separate processes. Attribution relies on that: the two frameworks' tests are never checked for overlap with each other.
-- **UI tests record nothing about the app.** The code they exercise runs in the app's process, which doesn't link the package.
+- **UI tests record which app process each test launched, not the app's counters.** The app's coverage comes from the profile Xcode writes for each app process (`<uuid>-<pid>.profraw` beside the run's `Coverage.profdata`). The pid is read from `XCUIApplication`'s private `processID` property; if a future Xcode removes it, nothing is written. Processes the app starts itself, such as extensions, aren't listed.
 - **Images loaded late aren't observed.** An image loaded after the first test starts, such as a framework the tests `dlopen`, is missing from the records.
 - **The package's own code shows up in the records.** Under xcodebuild, the observer is instrumented like the code under test, and the trait's code is instrumented everywhere. Their functions appear in the records, and a reader should ignore them.
 
