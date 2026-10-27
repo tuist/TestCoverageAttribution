@@ -28,7 +28,7 @@ extension AttributionTests {
                 "-quiet",
             ],
             environment: environment,
-            directory: fixture
+            directory: fixture,
         )
 
         let launches = try Launch.all(in: output)
