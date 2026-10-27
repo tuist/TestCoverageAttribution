@@ -4,7 +4,7 @@ import Testing
 extension AttributionTests {
     /// The app a UI test drives runs in a process of its own, which Xcode profiles on its own and
     /// names after its pid: the observer lists each launch's pid with the test that made it, once
-    /// however often the test activates it, and a launch from a class `setUp` with its suite alone.
+    /// however often tests activate it, and a launch from a class `setUp` with its suite alone.
     @Test func listsTheAppProcessesEachUITestLaunched() throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }

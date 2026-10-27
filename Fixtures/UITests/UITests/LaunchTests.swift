@@ -35,7 +35,9 @@ final class SharedLaunchTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Activating the shared process leaves it listed with the class that launched it.
     func testUsesTheSharedLaunch() {
+        Self.app.activate()
         XCTAssertTrue(Self.app.staticTexts["launched"].waitForExistence(timeout: 30))
     }
 }
