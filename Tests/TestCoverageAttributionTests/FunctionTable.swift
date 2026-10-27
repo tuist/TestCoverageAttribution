@@ -22,7 +22,7 @@ enum FunctionTable {
                 data,
                 dataAddress: dataAddress,
                 countersAddress: countersAddress,
-                countersSize: countersSize
+                countersSize: countersSize,
             ) {
                 guard let name = byReference[function.reference] else { continue }
                 for counter in function.counters {
@@ -47,7 +47,9 @@ enum FunctionTable {
                 let byte = bytes[offset]
                 offset += 1
                 value |= Int(byte & 0x7F) << shift
-                if byte & 0x80 == 0 { return value }
+                if byte & 0x80 == 0 {
+                    return value
+                }
                 shift += 7
             }
             throw FunctionTableError.malformed("names")
@@ -81,7 +83,7 @@ enum FunctionTable {
         _ data: [UInt8],
         dataAddress: Int64,
         countersAddress: Int64,
-        countersSize: Int
+        countersSize: Int,
     ) -> [(reference: UInt64, counters: Range<Int>)] {
         let total = countersSize / 8
         for (recordSize, countOffset) in [(64, 48), (56, 40), (48, 40)] where !data.isEmpty && data.count % recordSize == 0 {
@@ -92,7 +94,9 @@ enum FunctionTable {
                 for offset in stride(from: 0, to: data.count, by: recordSize) {
                     let pointer = Int64(bitPattern: load(data, offset + 16, size: 8))
                     let count = Int(load(data, offset + countOffset, size: 4))
-                    if count == 0, pointer == 0 { continue }
+                    if count == 0, pointer == 0 {
+                        continue
+                    }
                     let distance = (relative ? dataAddress + Int64(offset) + pointer : pointer) - countersAddress
                     guard distance >= 0, distance % 8 == 0, Int(distance / 8) + count <= total else {
                         valid = false
@@ -103,7 +107,9 @@ enum FunctionTable {
                     claimed += count
                 }
                 // A wrong layout rarely lands every record in range; claiming most counters settles it.
-                if valid, claimed > 0, claimed * 2 >= total { return ranges }
+                if valid, claimed > 0, claimed * 2 >= total {
+                    return ranges
+                }
             }
         }
         return []

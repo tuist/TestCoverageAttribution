@@ -29,7 +29,7 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
     public func provideScope(
         for test: Test,
         testCase: Test.Case?,
-        performing function: @Sendable () async throws -> Void
+        performing function: @Sendable () async throws -> Void,
     ) async throws {
         #if canImport(TestCoverageAttributionObserver)
             guard testCase != nil, !Self.isInScope else {
