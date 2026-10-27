@@ -9,7 +9,7 @@ A Swift package that test targets link to record which coverage counters each te
   - `Fixtures/Example` - with SwiftPM, xcodebuild on macOS and xcodebuild on an iOS simulator.
   - `Fixtures/Concurrency` - the overlapping, nested-trait and failure cases, in a package of their own since Swift Testing runs suites in parallel across the process.
   - `Fixtures/StaticArchive` - links the observer from a static archive, with and without `-ObjC`.
-  - `Fixtures/UITests` - an app and its UI tests, generated with Tuist (`Project.swift`) since SwiftPM can't build an app; `Launches.swift` reads `launches.tsv`.
+  - `Fixtures/UITests` - an app and its UI tests. It's a Tuist project (`Project.swift`), because a UI test needs an app target and SwiftPM can't build apps; `Launches.swift` reads `launches.tsv`.
 
 ## Rules
 - Never crash or block the test process: every failure path returns and the tests run as if nothing were linked.
