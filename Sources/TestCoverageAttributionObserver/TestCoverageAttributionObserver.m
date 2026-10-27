@@ -66,7 +66,7 @@ static FILE *launches;
 static bool launches_failed;
 static NSString *current_suite;
 static NSString *current_test;
-static NSMutableSet<NSNumber *> *scope_launches;
+static NSMutableSet<NSNumber *> *listed_launches;
 
 static const uint8_t *section(const struct mach_header_64 *h, const char *name, unsigned long *size) {
     const uint8_t *p = getsectiondata(h, "__DATA", name, size);
@@ -256,8 +256,10 @@ static void scope_end(const char *module, const char *suite, const char *name) {
 // so recording which test launched which process is enough for a reader to attribute it. Each
 // time -[XCUIApplication launch] or -activate returns, the app's pid is appended to launches.tsv
 // as `pid\tmodule\tsuite\tname`: the running test, or an empty name for a launch outside one, such
-// as a class setUp. A pid is written once per scope, since activating a running app returns its pid
-// again. The pid comes from the private `processID` property; without it nothing is written.
+// as a class setUp. A pid is written once, with the scope that launched it: activating a running app
+// returns its pid again, and the process's single profile can't be split between the scopes that
+// later activate it. The pid comes from the private `processID` property; without it nothing is
+// written.
 static void write_launch(pid_t pid) {
     if (launches_failed || !out_dir[0]) return;
     if (!launches) {
@@ -287,9 +289,9 @@ static void record_launch(id application) {
     }
     if (pid <= 0) return;
     pthread_mutex_lock(&lock);
-    if (!scope_launches) scope_launches = [NSMutableSet set];
-    if (![scope_launches containsObject:@(pid)]) {
-        [scope_launches addObject:@(pid)];
+    if (!listed_launches) listed_launches = [NSMutableSet set];
+    if (![listed_launches containsObject:@(pid)]) {
+        [listed_launches addObject:@(pid)];
         write_launch(pid);
     }
     pthread_mutex_unlock(&lock);
@@ -440,7 +442,6 @@ static bool is_class_suite(NSString *name) {
     pthread_mutex_lock(&lock);
     current_suite = suite;
     current_test = test;
-    scope_launches = nil;
     pthread_mutex_unlock(&lock);
 }
 
