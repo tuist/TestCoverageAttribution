@@ -68,7 +68,7 @@ struct Record: Equatable {
                 module: module,
                 suite: suite,
                 name: name,
-                counters: counters
+                counters: counters,
             ))
         }
         return records

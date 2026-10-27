@@ -15,14 +15,14 @@ let package = Package(
             dependencies: [
                 "Example",
                 .product(name: "TestCoverageAttribution", package: "TestCoverageAttribution"),
-            ]
+            ],
         ),
         .testTarget(
             name: "ExampleXCTestOnlyTests",
             dependencies: [
                 "Example",
                 .product(name: "TestCoverageAttribution", package: "TestCoverageAttribution"),
-            ]
+            ],
         ),
-    ]
+    ],
 )

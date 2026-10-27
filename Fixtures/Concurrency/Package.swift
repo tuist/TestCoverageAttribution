@@ -15,7 +15,7 @@ let package = Package(
             dependencies: [
                 "Concurrency",
                 .product(name: "TestCoverageAttribution", package: "TestCoverageAttribution"),
-            ]
+            ],
         ),
-    ]
+    ],
 )

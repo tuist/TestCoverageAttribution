@@ -23,7 +23,7 @@ struct AttributionTests {
 
         let add = try #require(tests.first { $0.kind == .xcTest && $0.suite == "AdditionTests" && $0.name == "testAdd" })
         let multiply = try #require(
-            tests.first { $0.kind == .swiftTesting && $0.suite == "MultiplicationTests" && $0.name == "multiply()" }
+            tests.first { $0.kind == .swiftTesting && $0.suite == "MultiplicationTests" && $0.name == "multiply()" },
         )
         // A test that declares a display name is recorded under it, as the result bundle reports it.
         let byZero = try #require(tests.first { $0.kind == .swiftTesting && $0.name == "Multiplying by zero" })
@@ -79,7 +79,7 @@ struct AttributionTests {
         try Self.execute(
             Self.packageRoot.appending(path: "Fixtures/StaticArchive/run.sh"),
             [scratch.appending(path: "build").path(), objC ? "objc" : "no-objc"],
-            environment: environment
+            environment: environment,
         )
 
         let test = try Record.all(in: output).first { $0.kind == .xcTest && $0.name == "testSum" }
@@ -142,7 +142,7 @@ struct AttributionTests {
         attributing: Bool,
         fixture name: String = "Example",
         filter: String? = nil,
-        inspect: (URL) throws -> Void = { _ in }
+        inspect: (URL) throws -> Void = { _ in },
     ) throws -> [Record] {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -182,7 +182,7 @@ struct AttributionTests {
                 "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
                 "--show-codecov-path",
             ],
-            environment: Self.cleanEnvironment
+            environment: Self.cleanEnvironment,
         )
         let path = try #require(output.split(separator: "\n").last.map(String.init))
         return try Data(contentsOf: URL(filePath: path))
@@ -205,7 +205,7 @@ struct AttributionTests {
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String] = cleanEnvironment,
-        directory: URL? = nil
+        directory: URL? = nil,
     ) throws -> String {
         let logs = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
@@ -238,7 +238,9 @@ struct AttributionTests {
     /// An iPhone simulator the selected Xcode can run, created if there is none: a runner image can
     /// have the iOS runtime without any simulator on it.
     private static func iPhoneSimulator(fixture: URL) throws -> String {
-        if let id = try listedIPhoneSimulator(fixture: fixture).id { return id }
+        if let id = try listedIPhoneSimulator(fixture: fixture).id {
+            return id
+        }
         try createIPhoneSimulator()
         let (id, destinations) = try listedIPhoneSimulator(fixture: fixture)
         return try #require(id, "No iPhone simulator is available, even after creating one:\n\(destinations)")
@@ -251,7 +253,7 @@ struct AttributionTests {
         let destinations = try execute(
             URL(filePath: "/usr/bin/xcrun"),
             ["xcodebuild", "-showdestinations", "-scheme", "\(fixture.lastPathComponent)-Package"],
-            directory: fixture
+            directory: fixture,
         )
         // `{ platform:iOS Simulator, arch:arm64, id:<UDID>, OS:26.2, name:iPhone 17 }`
         let iPhone = destinations.split(separator: "\n").first {
@@ -283,15 +285,15 @@ struct AttributionTests {
             JSONDecoder().decode(Runtimes.self, from: Data(json.utf8)).runtimes
                 .filter { $0.platform == "iOS" }
                 .max { $0.version.compare($1.version, options: .numeric) == .orderedAscending },
-            "No iOS simulator runtime is installed"
+            "No iOS simulator runtime is installed",
         )
         let deviceType = try #require(
             runtime.supportedDeviceTypes.first { $0.productFamily == "iPhone" },
-            "The iOS \(runtime.version) runtime supports no iPhone"
+            "The iOS \(runtime.version) runtime supports no iPhone",
         )
         try execute(
             URL(filePath: "/usr/bin/xcrun"),
-            ["simctl", "create", "TestCoverageAttribution iPhone", deviceType.identifier, runtime.identifier]
+            ["simctl", "create", "TestCoverageAttribution iPhone", deviceType.identifier, runtime.identifier],
         )
     }
 }

@@ -11,7 +11,7 @@ let package = Package(
     products: [
         .library(
             name: "TestCoverageAttribution",
-            targets: ["TestCoverageAttribution"]
+            targets: ["TestCoverageAttribution"],
         ),
     ],
     targets: [
@@ -23,10 +23,10 @@ let package = Package(
                 // records nothing: a cross-platform test target can link it unconditionally.
                 .target(
                     name: "TestCoverageAttributionObserver",
-                    condition: .when(platforms: [.macOS, .macCatalyst, .iOS, .tvOS, .watchOS, .visionOS])
+                    condition: .when(platforms: [.macOS, .macCatalyst, .iOS, .tvOS, .watchOS, .visionOS]),
                 ),
-            ]
+            ],
         ),
         .testTarget(name: "TestCoverageAttributionTests"),
-    ]
+    ],
 )
