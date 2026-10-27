@@ -2,3 +2,5 @@
 "swiftlint" = "0.65.1"
 "swiftformat" = "0.64.4"
 "git-cliff" = "2.14.2"
+# Generates the UI test fixture, which needs an app: SwiftPM can't build one.
+"tuist" = "4.214.0"
