@@ -3,4 +3,4 @@
 "swiftformat" = "0.64.4"
 "git-cliff" = "2.14.2"
 # Generates the UI test fixture: a UI test needs an app target, and SwiftPM can't build apps.
-"tuist" = "4.214.0"
+"tuist" = "4.214.1"
