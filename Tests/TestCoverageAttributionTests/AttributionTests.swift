@@ -208,15 +208,15 @@ struct AttributionTests {
         return environment
     }
 
-    /// Runs `executable`, requires it to succeed with its output in the failure unless told not to,
-    /// and returns what it wrote to standard output.
+    /// Runs `executable`, requires it to succeed with its output in the failure, and returns what it
+    /// wrote to standard output. With a `timeout`, a run that takes longer is stopped and fails.
     @discardableResult
     static func execute(
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String] = cleanEnvironment,
         directory: URL? = nil,
-        requiringSuccess: Bool = true,
+        timeout: TimeInterval? = nil,
     ) throws -> String {
         let logs = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
@@ -235,16 +235,22 @@ struct AttributionTests {
         process.currentDirectoryURL = directory
         process.standardOutput = outputHandle
         process.standardError = errorHandle
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        process.waitUntilExit()
+        let timedOut = exited.wait(timeout: timeout.map { .now() + $0 } ?? .distantFuture) == .timedOut
+        if timedOut {
+            process.terminate()
+            exited.wait()
+        }
         try outputHandle.close()
         try errorHandle.close()
 
         let output = String(bytes: try Data(contentsOf: standardOutput), encoding: .utf8) ?? ""
         let error = String(bytes: try Data(contentsOf: standardError), encoding: .utf8) ?? ""
         try #require(
-            !requiringSuccess || process.terminationStatus == 0,
-            "\(executable.lastPathComponent) failed:\n\(output)\n\(error)",
+            !timedOut && process.terminationStatus == 0,
+            "\(executable.lastPathComponent) \(timedOut ? "timed out" : "failed"):\n\(output)\n\(error)",
         )
         return output
     }

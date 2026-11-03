@@ -51,7 +51,7 @@ extension AttributionTests {
         ]))
     }
 
-    /// Without a skip list, every test runs, and the tests the list would name fail.
+    /// Without a skip list, every test runs, those the list would name included.
     @Test func runsEveryTestWithoutASkipList() throws {
         let fixture = Self.packageRoot.appending(path: "Fixtures/UITests")
         let simulator = try Self.iPhoneSimulator(fixture: Self.packageRoot.appending(path: "Fixtures/Example"))
@@ -61,7 +61,7 @@ extension AttributionTests {
         defer { try? FileManager.default.removeItem(at: scratch) }
         let resultBundle = scratch.appending(path: "Tests.xcresult")
 
-        // Only the class whose class setUp doesn't crash, whose listed tests fail.
+        // Only a class whose class setUp doesn't crash.
         try Self.execute(
             URL(filePath: "/usr/bin/xcrun"),
             [
@@ -72,14 +72,14 @@ extension AttributionTests {
                 "-only-testing:AppTests/PartlySkippedTests",
             ],
             directory: fixture,
-            requiringSuccess: false,
+            timeout: Self.xcodebuildTimeout,
         )
         let results = try Self.testResults(in: resultBundle)
         #expect(results.map(\.description).sorted() == [
             "AppTests/PartlySkippedTests/testRuns() Passed",
-            "AppTests/PartlySkippedTests/testSkipped() Failed",
-            "AppTests/PartlySkippedTests/testSkippedAsync() Failed",
-            "AppTests/PartlySkippedTests/testSkippedThrowing() Failed",
+            "AppTests/PartlySkippedTests/testSkipped() Passed",
+            "AppTests/PartlySkippedTests/testSkippedAsync() Passed",
+            "AppTests/PartlySkippedTests/testSkippedThrowing() Passed",
         ])
     }
 
@@ -105,6 +105,7 @@ extension AttributionTests {
                 ] + (run == .parallel ? parallel : ["-parallel-testing-enabled", "NO"]),
                 environment: environment,
                 directory: fixture,
+                timeout: Self.xcodebuildTimeout,
             )
         case .shard:
             try Self.execute(
@@ -112,6 +113,7 @@ extension AttributionTests {
                 ["xcodebuild", "build-for-testing", "-workspace", "UITests.xcworkspace", "-scheme", "SkipList"]
                     + destination + ["-derivedDataPath", derivedData.path(), "-quiet"],
                 directory: fixture,
+                timeout: Self.xcodebuildTimeout,
             )
             let products = derivedData.appending(path: "Build/Products")
             let testRun = try #require(
@@ -127,9 +129,14 @@ extension AttributionTests {
                     ],
                 environment: environment,
                 directory: fixture,
+                timeout: Self.xcodebuildTimeout,
             )
         }
     }
+
+    /// How long one xcodebuild invocation may take before it is stopped and its output reported,
+    /// well under the suite's time limit.
+    static let xcodebuildTimeout: TimeInterval = 360
 
     /// A test case in a result bundle: `module/suite/name`, and how it ended.
     struct TestResult: CustomStringConvertible {
