@@ -57,8 +57,8 @@ Use a fresh directory, such as one from `mktemp -d`, rather than a fixed path in
 
 ```bash
 output=$(mktemp -d)
-TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR="$output" xcodebuild test -enableCodeCoverage YES -parallel-testing-enabled NO …
-TEST_COVERAGE_ATTRIBUTION_DIR="$output" swift test --enable-code-coverage --no-parallel
+TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR="$output" xcodebuild test -enableCodeCoverage YES …
+TEST_COVERAGE_ATTRIBUTION_DIR="$output" swift test --enable-code-coverage
 ls "$output"   # one directory per test process
 ```
 
@@ -68,7 +68,7 @@ Supported platforms are macOS and the iOS simulator. On a device, the process ca
 
 ## Skipping tests
 
-A runner that knows which tests a change can't affect, such as Tuist's coverage-based selective testing, can have the package remove them before XCTest runs them. Set `TEST_COVERAGE_ATTRIBUTION_SKIP_FILE` to the path of a UTF-8 file that lists them, one per line:
+A runner that knows which tests a change can't affect, such as Tuist's coverage-based selective testing, can have the package remove them before XCTest runs them. Set `TEST_COVERAGE_ATTRIBUTION_SKIP_FILE` to the absolute path of a UTF-8 file that lists them, one per line. A relative path is read from the test process's working directory, such as the simulator app's, where the file isn't.
 
 ```text
 CheckoutTests/DiscountTests/testAppliesDiscount()

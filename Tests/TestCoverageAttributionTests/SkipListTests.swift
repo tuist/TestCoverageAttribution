@@ -108,6 +108,13 @@ extension AttributionTests {
                 timeout: Self.xcodebuildTimeout,
             )
         case .shard:
+            // A run with another Xcode leaves its own `.xctestrun` beside the one built here.
+            let products = derivedData.appending(path: "Build/Products")
+            for file in (try? FileManager.default.contentsOfDirectory(atPath: products.path())) ?? []
+                where file.hasSuffix(".xctestrun")
+            {
+                try FileManager.default.removeItem(at: products.appending(path: file))
+            }
             try Self.execute(
                 URL(filePath: "/usr/bin/xcrun"),
                 ["xcodebuild", "build-for-testing", "-workspace", "UITests.xcworkspace", "-scheme", "SkipList"]
@@ -115,7 +122,6 @@ extension AttributionTests {
                 directory: fixture,
                 timeout: Self.xcodebuildTimeout,
             )
-            let products = derivedData.appending(path: "Build/Products")
             let testRun = try #require(
                 try FileManager.default.contentsOfDirectory(atPath: products.path())
                     .first { $0.hasPrefix("SkipList_") && $0.hasSuffix(".xctestrun") },

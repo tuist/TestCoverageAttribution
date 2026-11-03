@@ -26,8 +26,9 @@
 //   launches.tsv   one line per process a UI test launched, see record_launch()
 //
 // Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
-// TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE) names a file of XCTest tests not to run, which
-// are removed before XCTest runs them. See load_skip_list(). It works with or without recording.
+// TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of XCTest tests
+// not to run, which are removed before XCTest runs them. See load_skip_list(). It works with or
+// without recording.
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
