@@ -24,12 +24,17 @@
 //   <n>.names      the image's raw __llvm_prf_names section
 //   records.bin    one record per scope, see write_record()
 //   launches.tsv   one line per process a UI test launched, see record_launch()
+//
+// Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
+// TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE) names a file of XCTest tests not to run, which
+// are removed before XCTest runs them. See load_skip_list(). It works with or without recording.
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
+#include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -390,6 +395,98 @@ static bool is_class_suite(NSString *name) {
         && ![name isEqualToString:@"Selected tests"];
 }
 
+// Skip list: one test per line, `module/suite/name`, the way xcodebuild's -skip-testing names a
+// test and the records name it: the test bundle, the class without its Swift module, and the test
+// as the result bundle names it (`testAdd()`) or as its selector (`testAdd`,
+// `testAddAndReturnError:`, `testAddWithCompletionHandler:`). Blank lines, lines without exactly
+// three components (a whole module is skipped with -skip-testing, and a suite can gain tests the
+// list doesn't know) and tests that don't exist are ignored. An unreadable file skips nothing.
+//
+// The listed tests are removed from +[XCTestCase defaultTestSuite], the suite XCTest builds for
+// each class, both when it lists the tests (parallel runs hand the listed tests out to their
+// clones) and when it runs them. A removed test isn't in the result bundle, and a class whose
+// tests are all removed doesn't run its class setUp. Only XCTest is affected: Swift Testing tests
+// don't go through XCTest's suites.
+static NSSet<NSString *> *skipped_tests;
+static IMP original_default_test_suite;
+
+static NSString *skip_identifier(NSString *module, NSString *suite, NSString *name) {
+    for (NSString *suffix in @[@"()", @"AndReturnError:", @"WithCompletionHandler:"]) {
+        if ([name hasSuffix:suffix]) {
+            name = [name substringToIndex:name.length - suffix.length];
+            break;
+        }
+    }
+    return [NSString stringWithFormat:@"%@/%@/%@", module, suite, name];
+}
+
+static void load_skip_list(void) {
+    const char *path = getenv("TEST_COVERAGE_ATTRIBUTION_SKIP_FILE");
+    if (!path || !*path) return;
+    NSString *contents = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
+    NSMutableSet<NSString *> *tests = [NSMutableSet set];
+    for (NSString *line in [contents componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSArray<NSString *> *components = [[line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]
+            componentsSeparatedByString:@"/"];
+        if (components.count != 3 || components[0].length == 0 || components[1].length == 0
+            || components[2].length == 0)
+            continue;
+        [tests addObject:skip_identifier(components[0], components[1], components[2])];
+    }
+    if (tests.count > 0) skipped_tests = tests;
+}
+
+// A class's suite holds its tests. When some are listed, the suite is kept and its tests replaced
+// through XCTestSuite's private -setTests:, since the suite is what runs the class setUp and
+// tearDown; an XCTest without it runs every test. When all are listed, an empty suite takes its
+// place, so the class setUp doesn't run.
+static id suite_without_skipped_tests(Class test_class, id suite) {
+    Class test_case = NSClassFromString(@"XCTestCase");
+    NSArray *tests = [suite valueForKey:@"tests"];
+    if (!test_case || ![tests isKindOfClass:[NSArray class]]) return suite;
+    NSString *module = [NSBundle bundleForClass:test_class].bundleURL.lastPathComponent.stringByDeletingPathExtension ?: @"";
+    NSMutableArray *kept = [NSMutableArray arrayWithCapacity:tests.count];
+    for (id test in tests) {
+        if ([test isKindOfClass:test_case]) {
+            NSString *test_suite, *method;
+            split_xctest_name([test name], &test_suite, &method);
+            if ([skipped_tests containsObject:skip_identifier(module, test_suite, method)]) continue;
+        }
+        [kept addObject:test];
+    }
+    if (kept.count == tests.count) return suite;
+    if (kept.count == 0) {
+        Class xctest_suite = NSClassFromString(@"XCTestSuite");
+        SEL with_name = NSSelectorFromString(@"testSuiteWithName:");
+        if (![xctest_suite respondsToSelector:with_name]) return suite;
+        return ((id (*)(Class, SEL, NSString *))objc_msgSend)(xctest_suite, with_name, [suite name]);
+    }
+    SEL set_tests = NSSelectorFromString(@"setTests:");
+    if (![suite respondsToSelector:set_tests]) return suite;
+    ((void (*)(id, SEL, NSArray *))objc_msgSend)(suite, set_tests, kept);
+    return suite;
+}
+
+static id default_test_suite_hook(Class self, SEL _cmd) {
+    id suite = ((id (*)(Class, SEL))original_default_test_suite)(self, _cmd);
+    @try {
+        return suite_without_skipped_tests(self, suite);
+    } @catch (NSException *exception) {
+        return suite;
+    }
+}
+
+static void skip_listed_tests(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class test_case = NSClassFromString(@"XCTestCase");
+        Method method = test_case ? class_getClassMethod(test_case, NSSelectorFromString(@"defaultTestSuite")) : NULL;
+        if (!method) return;
+        original_default_test_suite = method_getImplementation(method);
+        method_setImplementation(method, (IMP)default_test_suite_hook);
+    });
+}
+
 @interface TestCoverageAttributionObserver : NSObject
 @end
 
@@ -476,7 +573,22 @@ static void register_observer(void) {
 }
 #pragma clang diagnostic pop
 
+// A test bundle loads after XCTest, so its classes are hooked before XCTest asks them for their
+// tests. In a process that loads XCTest later, the main queue runs once it is up.
+static void start_skipping(void) {
+    load_skip_list();
+    if (!skipped_tests) return;
+    if (NSClassFromString(@"XCTestCase")) {
+        skip_listed_tests();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            skip_listed_tests();
+        });
+    }
+}
+
 __attribute__((constructor)) static void test_coverage_attribution_init(void) {
+    start_skipping();
     const char *dir = getenv("TEST_COVERAGE_ATTRIBUTION_DIR");
     if (!dir || !*dir || process_owner()) return;
     mkdir(dir, 0755);

@@ -42,6 +42,30 @@ jobs:
           version: 2026.10.21
       - run: mise run test
 
+  # The skip list depends on how each Xcode lists and hands out tests, so it also runs on the
+  # oldest Xcode Tuist supports and the newest: hosted unit tests and UI tests on an iOS
+  # simulator, serially, in parallel and as a shard. The `test` job covers 26.3.
+  test-skip-list:
+    name: "Skip list on Xcode ${{ matrix.xcode }}"
+    runs-on: ${{ matrix.runner }}
+    if: github.repository == 'tuist/TestCoverageAttribution'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - xcode: "26.0.1"
+            runner: tuist-macos-26-0-1
+          - xcode: "27.0"
+            runner: tuist-macos-27-0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          version: 2026.10.21
+      - run: mise run test-skip-list
+
   test-linux:
     name: "Test on Linux"
     runs-on: ubuntu-latest

@@ -9,4 +9,9 @@ final class ArchiveTests: XCTestCase {
     func testSum() {
         XCTAssertEqual(sum(2, 3), 5)
     }
+
+    /// Listed in the skip list when the bundle links with `-ObjC`, so it runs only without it.
+    func testSkipped() {
+        XCTAssertNil(ProcessInfo.processInfo.environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"])
+    }
 }
