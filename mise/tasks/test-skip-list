@@ -1,0 +1,5 @@
+#!/bin/bash
+#MISE description="Run the skip list's tests: hosted unit tests and UI tests on an iOS simulator, serially, in parallel and as a shard"
+set -euo pipefail
+
+swift test --package-path "$MISE_PROJECT_ROOT" --filter 'removesTheListedXCTestTestsBeforeTheyRun|runsEveryTestWithoutASkipList'

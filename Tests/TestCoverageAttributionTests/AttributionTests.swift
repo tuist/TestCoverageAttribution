@@ -66,7 +66,8 @@ struct AttributionTests {
 
     /// Linked from a static archive, as Tuist links packages by default, an XCTest-only target
     /// references nothing in the package, so the linker drops the observer unless the target links
-    /// with `-ObjC`, which loads every archive member that defines an Objective-C class.
+    /// with `-ObjC`, which loads every archive member that defines an Objective-C class. The skip
+    /// list is read by the same member: with `-ObjC`, the listed test doesn't run.
     @Test(arguments: [false, true])
     func needsObjCToLinkTheObserverFromAStaticArchive(objC: Bool) throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
@@ -75,6 +76,11 @@ struct AttributionTests {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         var environment = Self.cleanEnvironment
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = output.path()
+        if objC {
+            let skipList = scratch.appending(path: "skip.txt")
+            try "ArchiveTests/ArchiveTests/testSkipped()\n".write(to: skipList, atomically: true, encoding: .utf8)
+            environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = skipList.path()
+        }
 
         try Self.execute(
             Self.packageRoot.appending(path: "Fixtures/StaticArchive/run.sh"),
@@ -82,9 +88,11 @@ struct AttributionTests {
             environment: environment,
         )
 
-        let test = try Record.all(in: output).first { $0.kind == .xcTest && $0.name == "testSum" }
+        let records = try Record.all(in: output)
+        let test = records.first { $0.kind == .xcTest && $0.name == "testSum" }
         #expect((test != nil) == objC)
         #expect(test?.ran("3sum") ?? !objC)
+        #expect(!records.contains { $0.name == "testSkipped" })
     }
 
     /// Two tests that run at the same time are both marked overlapped, including the one that
@@ -195,17 +203,20 @@ struct AttributionTests {
         environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
         environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
+        environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = nil
+        environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = nil
         return environment
     }
 
-    /// Runs `executable`, requires it to succeed with its output in the failure, and returns what it
-    /// wrote to standard output.
+    /// Runs `executable`, requires it to succeed with its output in the failure unless told not to,
+    /// and returns what it wrote to standard output.
     @discardableResult
     static func execute(
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String] = cleanEnvironment,
         directory: URL? = nil,
+        requiringSuccess: Bool = true,
     ) throws -> String {
         let logs = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
@@ -231,7 +242,10 @@ struct AttributionTests {
 
         let output = String(bytes: try Data(contentsOf: standardOutput), encoding: .utf8) ?? ""
         let error = String(bytes: try Data(contentsOf: standardError), encoding: .utf8) ?? ""
-        try #require(process.terminationStatus == 0, "\(executable.lastPathComponent) failed:\n\(output)\n\(error)")
+        try #require(
+            !requiringSuccess || process.terminationStatus == 0,
+            "\(executable.lastPathComponent) failed:\n\(output)\n\(error)",
+        )
         return output
     }
 

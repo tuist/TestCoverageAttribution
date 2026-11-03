@@ -3,20 +3,15 @@
 #endif
 import Testing
 
-/// Attributes the code each Swift Testing test executes to that test.
+/// Attributes the code each Swift Testing test executes to that test, by marking where each test
+/// starts and ends: Swift Testing has no observation center a library can join.
 ///
-/// XCTest needs nothing beyond linking this package: the library observes it on its own. Swift
-/// Testing has no observation center a library can join, so this trait marks where each test
-/// starts and ends. It applies to every test and nested suite of the suite it is added to:
-///
-/// ```swift
-/// @Suite(.coverageAttribution) struct CheckoutTests { ... }
-/// ```
-///
-/// Attribution needs the tests of a process to run one at a time: a test that overlaps another
-/// is left out. `.serialized` orders only the suite's own tests, so turn off parallel testing for
-/// the run (`swift test --no-parallel`, `-parallel-testing-enabled NO`). When the run collects no
-/// attribution, or off Apple platforms, the trait does nothing.
+/// Kept, but hidden from the documentation and the README: test-scoped evidence and skipping are
+/// supported for XCTest and XCUITest only. The trait has to be added to every suite, Swift Testing
+/// runs tests in parallel within a process by default, which leaves overlapping tests without
+/// evidence, and a trait has no public way to skip a test. Projects that use it anyway get records
+/// as before.
+@_documentation(visibility: private)
 public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
     /// Whether a scope is already open around the running test case: a test in a suite nested in
     /// another that has the trait gets it once from each, and two scopes would mark it overlapped.
@@ -54,7 +49,8 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
 }
 
 extension Trait where Self == CoverageAttributionTrait {
-    /// Attributes the code each test executes to that test. See ``CoverageAttributionTrait``.
+    /// See ``CoverageAttributionTrait``.
+    @_documentation(visibility: private)
     public static var coverageAttribution: Self {
         Self()
     }

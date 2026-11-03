@@ -5,9 +5,11 @@
 > [!WARNING]
 > This package is experimental and in early development. Its API, the environment variables it reads and the format of what it records may change without notice between versions, and it hasn't been tested beyond the cases in this repository. Don't depend on it for anything critical yet.
 
-TestCoverageAttribution records which code each test executes. Xcode's code coverage tells you what a whole test run covered. This package attributes that coverage to the individual test that executed it.
+TestCoverageAttribution records which code each test executes. Xcode's code coverage tells you what a whole test run covered. This package attributes that coverage to the individual test that executed it. It can also skip a list of tests before they run.
 
-[Tuist](https://tuist.dev) uses it to collect per-test coverage evidence, which lets a run that skips tests reuse those tests' coverage from an earlier run.
+[Tuist](https://tuist.dev) uses it to collect per-test coverage evidence, which lets a run that skips tests reuse those tests' coverage from an earlier run, and to skip the tests a change can't affect.
+
+Both work for XCTest tests, UI tests included. Swift Testing tests run as usual: they get no per-test evidence and are never skipped one by one.
 
 ## Installation
 
@@ -31,32 +33,17 @@ While the package is at 0.x, a minor version can break its API or the format of 
 
 In an Xcode project, add the package and add `TestCoverageAttribution` to the test target's *Link Binary With Libraries* phase.
 
-When the package is linked as a static library or a static framework, as Tuist's Xcode project integration of packages does by default, add `-ObjC` to the test target's `OTHER_LDFLAGS`. An XCTest-only target references nothing in the package, so the linker drops the observer without it. SwiftPM and Xcode's own package integration link the package's object files directly and need nothing.
+When the package is linked as a static library or a static framework, as Tuist's Xcode project integration of packages does by default, add `-ObjC` to the test target's `OTHER_LDFLAGS`. An XCTest-only target references nothing in the package, so the linker drops the observer, and with it the skip list, without it. SwiftPM and Xcode's own package integration link the package's object files directly and need nothing.
 
 The package records on Apple platforms only. Elsewhere, such as Linux, it builds and does nothing, so a cross-platform test target can link it unconditionally.
 
 ## Usage
 
-**XCTest** needs nothing else. Linking the package is enough: the library registers an `XCTestObservation` observer when the test bundle loads.
-
-**Swift Testing** has no observation center a library can join, so add the `.coverageAttribution` trait to your suites. The trait applies to every test and nested suite of the suite it is added to:
-
-```swift
-import TestCoverageAttribution
-import Testing
-
-@Suite(.coverageAttribution)
-struct CheckoutTests {
-    @Test func appliesDiscount() { ... }
-}
-```
+**XCTest** needs nothing else. Linking the package is enough: the library registers an `XCTestObservation` observer when the test bundle loads. XCTest runs the tests of a process one at a time, and parallel testing runs each clone in a process of its own, so every test gets a record of its own either way.
 
 **UI tests** need nothing else either. The app a UI test drives runs in a process of its own, which the package can't observe, but Xcode profiles that process separately when code coverage is on. The package records which test launched which app process, so a reader such as Tuist can attribute the app's coverage to the test. See [`launches.tsv`](#output).
 
-Attribution needs the tests of a process to run one at a time. A test that runs at the same time as another is marked as overlapped and left out of per-test attribution, so parallel runs lose evidence. `.serialized` only orders the tests of the suite it's on, and its nested suites: Swift Testing still runs other suites in parallel with it. To attribute every test, turn off parallel testing for the run, which also serializes Swift Testing:
-
-- `swift test --no-parallel`
-- `xcodebuild test -parallel-testing-enabled NO`
+**Swift Testing** isn't supported. Swift Testing tests run as usual, and their coverage is in the run's report as always, but no test-scoped evidence is recorded for them and the skip list doesn't apply to them. Swift Testing has no observation center a library can join, it runs tests in parallel within a process by default, and a trait has no public way to skip a test.
 
 ## When it records
 
@@ -78,6 +65,27 @@ ls "$output"   # one directory per test process
 Code coverage must be enabled: without instrumentation there are no counters to observe.
 
 Supported platforms are macOS and the iOS simulator. On a device, the process can't write to a directory on the Mac that runs the tests.
+
+## Skipping tests
+
+A runner that knows which tests a change can't affect, such as Tuist's coverage-based selective testing, can have the package remove them before XCTest runs them. Set `TEST_COVERAGE_ATTRIBUTION_SKIP_FILE` to the path of a UTF-8 file that lists them, one per line:
+
+```text
+CheckoutTests/DiscountTests/testAppliesDiscount()
+CheckoutTests/DiscountTests/testRoundsDown()
+CheckoutUITests/PaymentTests/testPaysWithCard()
+```
+
+```bash
+TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE="$PWD/skip.txt" xcodebuild test …
+```
+
+- **Names.** Each line is `module/suite/name`, the way `-skip-testing` names a test and the records name it: the test bundle, the class without its Swift module, and the test as the result bundle names it (`testAppliesDiscount()`). The selector works too (`testAppliesDiscount`), including the bridged selectors of throwing and asynchronous Swift tests (`…AndReturnError:`, `…WithCompletionHandler:`).
+- **Only tests.** A line without exactly three components is ignored. Skip a whole target with `-skip-testing:CheckoutTests` instead. A suite is never skipped by naming it, because it can gain tests the list doesn't know about.
+- **Forgiving.** Blank lines and tests that don't exist are ignored. An unreadable file skips nothing. Skipping doesn't depend on `TEST_COVERAGE_ATTRIBUTION_DIR`.
+- **Where it applies.** `xcodebuild` passes the variable to the test process with the `TEST_RUNNER_` prefix: the app that hosts unit tests, and the runner of UI tests. It works with `test` and `test-without-building`, with `-only-testing`, and with parallel testing, where Xcode lists the tests, without the removed ones, before it hands them out to its clones. `swift test` reads it from the environment.
+- **What a skipped test looks like.** It's removed from the suite XCTest builds for its class, so it doesn't run and isn't in the result bundle. A class whose tests are all removed doesn't run its class `setUp` and `tearDown`. A class with tests left runs them as usual, class `setUp` included.
+- **XCTest only.** Swift Testing tests in the same target run as usual, even when listed.
 
 ## Output
 
@@ -111,16 +119,17 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 
 ## Limitations
 
-- **XCTest and Swift Testing run one after the other.** Xcode runs a process's XCTest tests first and its Swift Testing tests after them, and SwiftPM runs them in separate processes. Attribution relies on that: the two frameworks' tests are never checked for overlap with each other.
+- **Swift Testing isn't attributed or skipped.** See [Usage](#usage).
+- **Skipping some of a class's tests uses a private method.** XCTest has no public way to remove tests from a class's suite, so the package uses `XCTestSuite`'s private `-setTests:`, which keeps the suite and the class `setUp` it runs. If a future Xcode removes it, a class with some tests listed runs all of them; a class with all of its tests listed is still skipped. A class that overrides `defaultTestSuite` without calling `super` isn't filtered.
 - **UI tests record which app process each test launched, not the app's counters.** The app's coverage comes from the profile Xcode writes for each app process (`<uuid>-<pid>.profraw` beside the run's `Coverage.profdata`). The pid is read from `XCUIApplication`'s private `processID` property; if a future Xcode removes it, nothing is written. Processes the app starts itself, such as extensions, aren't listed.
 - **Images loaded late aren't observed.** An image loaded after the first test starts, such as a framework the tests `dlopen`, is missing from the records.
-- **The package's own code shows up in the records.** Under xcodebuild, the observer is instrumented like the code under test, and the trait's code is instrumented everywhere. Their functions appear in the records, and a reader should ignore them.
+- **The package's own code shows up in the records.** The package is instrumented like the code under test, so its functions appear in the records, and a reader should ignore them.
 
 ## Development
 
 ```bash
 mise run build
-mise run test   # runs the packages under Fixtures (SwiftPM, xcodebuild on macOS and an iOS simulator) and checks the records
+mise run test   # runs the fixtures (SwiftPM, xcodebuild on macOS and an iOS simulator), checks the records and the skip list
 mise run lint
 ```
 
