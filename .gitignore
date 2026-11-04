@@ -5,3 +5,5 @@
 Fixtures/UITests/Derived
 Fixtures/UITests/*.xcodeproj
 Fixtures/UITests/*.xcworkspace
+# Written to the working directory by an instrumented binary run without LLVM_PROFILE_FILE.
+*.profraw
