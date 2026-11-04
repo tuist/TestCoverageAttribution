@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-04
+### Details
+#### Miscellaneous Tasks
+- Remove a stray coverage profile and ignore *.profraw by @esnunes in [#34](https://github.com/tuist/TestCoverageAttribution/pull/34)
+
 ## [0.3.0] - 2026-11-03
 ### Details
 #### Bug Fixes
@@ -73,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## New Contributors
 * @esnunes made their first contribution
 * @renovate[bot] made their first contribution in [#17](https://github.com/tuist/TestCoverageAttribution/pull/17)
+[0.3.1]: https://github.com/tuist/TestCoverageAttribution/compare/0.3.0..0.3.1
 [0.3.0]: https://github.com/tuist/TestCoverageAttribution/compare/0.2.0..0.3.0
 [0.2.0]: https://github.com/tuist/TestCoverageAttribution/compare/0.1.2..0.2.0
 [0.1.2]: https://github.com/tuist/TestCoverageAttribution/compare/0.1.1..0.1.2
