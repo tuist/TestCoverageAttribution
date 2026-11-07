@@ -154,7 +154,7 @@ struct AttributionTests {
             .reduce(into: Set<String>()) { $0.formUnion($1.functions) }
 
         try #require(scopes.count == 10)
-        #expect(scopes.allSatisfy(\.overlapped))
+        #expect(scopes.filter { !$0.overlapped }.isEmpty)
         try #require(functions.count == 10)
 
         // Mangled fragments of the fixture's functions.
