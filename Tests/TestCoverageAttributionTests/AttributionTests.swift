@@ -141,6 +141,57 @@ struct AttributionTests {
         #expect(!tests[0].counters.isEmpty)
     }
 
+    /// Swift Testing runs the `Parallel` fixture's ten tests at once, so their counter records all
+    /// overlap. Built with function-entry tracking, each test still gets the functions its task ran:
+    /// through an actor, a task group's children, a `Task {}`, and a global another test built. What
+    /// a `Task.detached` or a GCD queue ran belongs to no test, and goes to the floor.
+    @Test(arguments: Runner.allCases)
+    func attributesParallelSwiftTestingTestsThroughTheirTasks(runner: Runner) throws {
+        let records = try runFixture(runner, attributing: true, fixture: "Parallel")
+        let scopes = records.filter { $0.kind == .swiftTesting }
+        let functions = records.filter { $0.kind == .functions && !$0.floor }
+        let floor = records.filter { $0.kind == .functions && $0.floor }
+            .reduce(into: Set<String>()) { $0.formUnion($1.functions) }
+
+        try #require(scopes.count == 10)
+        #expect(scopes.allSatisfy(\.overlapped))
+        try #require(functions.count == 10)
+
+        // Mangled fragments of the fixture's functions.
+        let expected: [String: [String]] = [
+            "AlphaTests": ["5AlphaO7compute", "5AlphaO4step", "6SharedO3mix", "11lookupTable"],
+            "BetaTests": ["4BetaC3add", "8betaStep", "11lookupTable"],
+            "GammaTests": ["5GammaO6fanOut", "9GammaLeafO4work", "6SharedO3mix"],
+            "DeltaTests": ["5DeltaO12unstructured", "9DeltaWorkO3run", "5DeltaO8detached"],
+            "EpsilonTests": ["7EpsilonO7onQueue"],
+        ]
+        let everyFragment = Set(expected.values.joined())
+        for record in functions {
+            let fragments = try #require(expected[record.suite], "\(record.suite)/\(record.name)")
+            #expect(record.module == "ParallelTests")
+            #expect(["first()", "second()"].contains(record.name))
+            for fragment in fragments {
+                #expect(record.ran(fragment), "\(record.suite)/\(record.name) didn't run \(fragment)")
+            }
+            for fragment in everyFragment.subtracting(fragments) {
+                #expect(!record.ran(fragment), "\(record.suite)/\(record.name) ran \(fragment)")
+            }
+            for fragment in ["12DetachedWorkO3run", "9QueueWorkO3run", "6UnusedO5never"] {
+                #expect(!record.ran(fragment), "\(record.suite)/\(record.name) ran \(fragment)")
+            }
+        }
+        #expect(floor.contains { $0.contains("12DetachedWorkO3run") })
+        #expect(floor.contains { $0.contains("9QueueWorkO3run") })
+        #expect(!floor.contains { $0.contains("6UnusedO5never") })
+    }
+
+    /// Code built without function-entry tracking records only counters, as before.
+    @Test func recordsNoFunctionsWithoutFunctionEntryTracking() throws {
+        let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "OverlapTests")
+        #expect(!records.isEmpty)
+        #expect(!records.contains { $0.kind == .functions })
+    }
+
     /// Runs one of the packages under `Fixtures`; with SwiftPM, only the tests `filter` matches.
     /// `inspect` gets the output directory before it is removed.
     /// `Concurrency` is a package of its own: Swift Testing runs suites in parallel across the
@@ -201,6 +252,7 @@ struct AttributionTests {
     static var cleanEnvironment: [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["TEST_COVERAGE_ATTRIBUTION_OWNER"] = nil
+        environment["TEST_COVERAGE_ATTRIBUTION_OWNER_2"] = nil
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
         environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = nil
         environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = nil

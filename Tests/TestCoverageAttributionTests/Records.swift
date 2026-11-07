@@ -1,23 +1,31 @@
 import Foundation
 
-/// A scope the observer recorded, as `records.bin` lays it out (see `write_record()`).
+/// A scope the observer recorded, as `records.bin` lays it out (see `write_record()`), or a function
+/// record from `functions.bin` (see `write_functions_record()`).
 struct Record: Equatable {
     enum Kind: UInt8 {
         case gap = 0
         case xcTest = 1
         case swiftTesting = 2
+        case functions = 3
     }
 
     let kind: Kind
     let overlapped: Bool
+    /// A functions record of what no test's task ran.
+    var floor = false
     let version: UInt8
     let module: String
     let suite: String
     let name: String
     /// The counters that moved, by image index: each counter's index and by how much it moved.
     let counters: [UInt32: [UInt32: UInt64]]
-    /// The functions those counters belong to, as `__llvm_prf_names` names them: mangled for
-    /// Swift. Filled in by `all(in:)`, which has the images.
+    /// A functions record's functions, by `functions.tsv` image index: each one's offset from the
+    /// image's base.
+    var functionOffsets: [UInt32: [UInt32]] = [:]
+    /// The functions those counters belong to, as `__llvm_prf_names` names them, or a functions
+    /// record's functions, as the image's symbol table names them: mangled for Swift. Filled in by
+    /// `all(in:)`, which has the images.
     var functions: Set<String> = []
 
     /// Whether a function whose name contains `fragment` ran in this scope.
@@ -31,13 +39,21 @@ struct Record: Equatable {
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { FileManager.default.fileExists(atPath: $0.appending(path: "records.bin").path()) }
             .flatMap { process in
-                let records = try parse(Data(contentsOf: process.appending(path: "records.bin")))
+                var records = try parse(Data(contentsOf: process.appending(path: "records.bin")))
+                let functionRecords = process.appending(path: "functions.bin")
+                if FileManager.default.fileExists(atPath: functionRecords.path()) {
+                    records += try parse(Data(contentsOf: functionRecords))
+                }
                 guard !records.isEmpty else { return records }
                 let functions = try FunctionTable.all(in: process)
-                return records.map { record in
+                let symbols = try FunctionSymbols(process: process)
+                return try records.map { record in
                     var record = record
                     for (image, counters) in record.counters {
                         record.functions.formUnion(counters.keys.compactMap { functions[image]?[Int($0)] })
+                    }
+                    for (image, offsets) in record.functionOffsets {
+                        record.functions.formUnion(try offsets.map { try symbols.function(image: image, offset: $0) })
                     }
                     return record
                 }
@@ -54,14 +70,19 @@ struct Record: Equatable {
             let suite = try reader.string()
             let name = try reader.string()
             var counters: [UInt32: [UInt32: UInt64]] = [:]
+            var functionOffsets: [UInt32: [UInt32]] = [:]
             for _ in 0 ..< (try reader.uint32()) {
                 let image = try reader.uint32()
                 let count = Int(try reader.uint32())
                 let indices = try (0 ..< count).map { _ in try reader.uint32() }
-                let deltas = try (0 ..< count).map { _ in try reader.uint64() }
-                counters[image] = Dictionary(uniqueKeysWithValues: zip(indices, deltas))
+                if kind == .functions {
+                    functionOffsets[image] = indices
+                } else {
+                    let deltas = try (0 ..< count).map { _ in try reader.uint64() }
+                    counters[image] = Dictionary(uniqueKeysWithValues: zip(indices, deltas))
+                }
             }
-            records.append(Record(
+            var record = Record(
                 kind: kind,
                 overlapped: header[1] & 1 == 1,
                 version: header[2],
@@ -69,7 +90,10 @@ struct Record: Equatable {
                 suite: suite,
                 name: name,
                 counters: counters,
-            ))
+            )
+            record.floor = header[1] & 2 == 2
+            record.functionOffsets = functionOffsets
+            records.append(record)
         }
         return records
     }
