@@ -53,6 +53,8 @@ import Testing
 struct CheckoutTests { ... }
 ```
 
+The trait applies to every test of a suite, nested suites included. Put it on every suite of the target, and on the suite rather than the test: a Swift Testing test without it runs outside any test's context, so what it executes counts for every test of its process, and traits listed before it on a test (such as one that sets up mocks) run outside the test's context too.
+
 A test that runs alone in its process gets a counter record like an XCTest test. Swift Testing runs a process's tests in parallel by default, though, and tests that overlap share the counters, so their records are marked overlapped. To tell them apart, build the code under test, and the test target, with function-entry tracking:
 
 ```
