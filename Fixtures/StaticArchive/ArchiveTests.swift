@@ -6,6 +6,8 @@ func sum(_ lhs: Int, _ rhs: Int) -> Int {
 
 /// Links the observer from a static archive and references nothing in it.
 final class ArchiveTests: XCTestCase {
+    @objc static let unskippableTests = ["testUnskippable"]
+
     func testSum() {
         XCTAssertEqual(sum(2, 3), 5)
     }
@@ -14,4 +16,7 @@ final class ArchiveTests: XCTestCase {
     func testSkipped() {
         XCTAssertNil(ProcessInfo.processInfo.environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"])
     }
+
+    /// Listed with `-ObjC` too, but unskippable, so it runs either way.
+    func testUnskippable() {}
 }

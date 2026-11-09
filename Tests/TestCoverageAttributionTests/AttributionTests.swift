@@ -67,7 +67,8 @@ struct AttributionTests {
     /// Linked from a static archive, as Tuist links packages by default, an XCTest-only target
     /// references nothing in the package, so the linker drops the observer unless the target links
     /// with `-ObjC`, which loads every archive member that defines an Objective-C class. The skip
-    /// list is read by the same member: with `-ObjC`, the listed test doesn't run.
+    /// list is read by the same member: with `-ObjC`, the listed test doesn't run, but the listed
+    /// tests a Swift or an Objective-C class marks unskippable do, and `unskippable.tsv` lists them.
     @Test(arguments: [false, true])
     func needsObjCToLinkTheObserverFromAStaticArchive(objC: Bool) throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
@@ -78,7 +79,12 @@ struct AttributionTests {
         environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = output.path()
         if objC {
             let skipList = scratch.appending(path: "skip.txt")
-            try "ArchiveTests/ArchiveTests/testSkipped()\n".write(to: skipList, atomically: true, encoding: .utf8)
+            try """
+            ArchiveTests/ArchiveTests/testSkipped()
+            ArchiveTests/ArchiveTests/testUnskippable()
+            ArchiveTests/ObjCArchiveTests/testUnskippable
+            ArchiveTests/ObjCArchiveTests/testSkippable
+            """.write(to: skipList, atomically: true, encoding: .utf8)
             environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = skipList.path()
         }
 
@@ -93,6 +99,13 @@ struct AttributionTests {
         #expect((test != nil) == objC)
         #expect(test?.ran("3sum") ?? !objC)
         #expect(!records.contains { $0.name == "testSkipped" })
+        let unskippable = records.filter { $0.kind == .xcTest && $0.name == "testUnskippable" }.map(\.suite).sorted()
+        #expect(unskippable == (objC ? ["ArchiveTests", "ObjCArchiveTests"] : []))
+        #expect(!records.contains { $0.name == "testSkippable" })
+        #expect(try Self.unskippableTests(in: output) == (objC ? [
+            "ArchiveTests\tArchiveTests\ttestUnskippable\t1",
+            "ArchiveTests\tObjCArchiveTests\ttestUnskippable\t1",
+        ] : []))
     }
 
     /// Two tests that run at the same time are both marked overlapped, including the one that
@@ -187,21 +200,6 @@ struct AttributionTests {
         try Self.execute(URL(filePath: "/usr/bin/xcrun"), arguments, environment: environment, directory: fixture)
         try inspect(output)
         return try Record.all(in: output)
-    }
-
-    /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
-    private func swiftPMCoverageReport() throws -> Data {
-        let output = try Self.execute(
-            URL(filePath: "/usr/bin/xcrun"),
-            [
-                "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
-                "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
-                "--show-codecov-path",
-            ],
-            environment: Self.cleanEnvironment,
-        )
-        let path = try #require(output.split(separator: "\n").last.map(String.init))
-        return try Data(contentsOf: URL(filePath: path))
     }
 
     /// This process's environment without the observer's variables, which the package's own test
@@ -323,5 +321,22 @@ struct AttributionTests {
             URL(filePath: "/usr/bin/xcrun"),
             ["simctl", "create", "TestCoverageAttribution iPhone", deviceType.identifier, runtime.identifier],
         )
+    }
+}
+
+extension AttributionTests {
+    /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
+    private func swiftPMCoverageReport() throws -> Data {
+        let output = try Self.execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            [
+                "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
+                "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
+                "--show-codecov-path",
+            ],
+            environment: Self.cleanEnvironment,
+        )
+        let path = try #require(output.split(separator: "\n").last.map(String.init))
+        return try Data(contentsOf: URL(filePath: path))
     }
 }

@@ -22,6 +22,9 @@ xcrun clang -c -fobjc-arc -fmodules -isysroot "$SDK" \
     -I "$ROOT/Sources/TestCoverageAttributionObserver/include" \
     "$ROOT/Sources/TestCoverageAttributionObserver/TestCoverageAttributionObserver.m" -o "$BUILD/observer.o"
 ar rcs "$BUILD/libTestCoverageAttributionObserver.a" "$BUILD/observer.o"
+# An Objective-C test class, in the bundle itself.
+xcrun clang -c -fobjc-arc -fmodules -isysroot "$SDK" -F "$FRAMEWORKS" \
+    "$FIXTURE/ObjCArchiveTests.m" -o "$BUILD/ObjCArchiveTests.o"
 /usr/libexec/PlistBuddy \
     -c "Add :CFBundleIdentifier string dev.tuist.ArchiveTests" \
     -c "Add :CFBundleExecutable string ArchiveTests" \
@@ -29,7 +32,8 @@ ar rcs "$BUILD/libTestCoverageAttributionObserver.a" "$BUILD/observer.o"
     "$BUILD/ArchiveTests.xctest/Contents/Info.plist" > /dev/null
 xcrun swiftc -sdk "$SDK" -F "$FRAMEWORKS" -I "$LIBRARIES" -L "$LIBRARIES" \
     -profile-generate -profile-coverage-mapping -emit-library -Xlinker -bundle \
-    "$FIXTURE/ArchiveTests.swift" -o "$BUILD/ArchiveTests.xctest/Contents/MacOS/ArchiveTests" \
+    "$FIXTURE/ArchiveTests.swift" "$BUILD/ObjCArchiveTests.o" \
+    -o "$BUILD/ArchiveTests.xctest/Contents/MacOS/ArchiveTests" \
     -framework XCTest -L "$BUILD" -lTestCoverageAttributionObserver "$@" \
     -Xlinker -rpath -Xlinker "$FRAMEWORKS" -Xlinker -rpath -Xlinker "$LIBRARIES"
 xcrun xctest "$BUILD/ArchiveTests.xctest"
