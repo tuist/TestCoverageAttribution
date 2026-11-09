@@ -24,11 +24,13 @@
 //   <n>.names      the image's raw __llvm_prf_names section
 //   records.bin    one record per scope, see write_record()
 //   launches.tsv   one line per process a UI test launched, see record_launch()
+//   unskippable.tsv one line per unskippable test that ran, see write_unskippable()
 //
 // Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
 // TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of tests not to
 // run: XCTest tests are removed before XCTest runs them, and the trait cancels Swift Testing tests.
-// See load_skip_list(). It works with or without recording.
+// See load_skip_list(). It works with or without recording. Tests marked unskippable always run, see
+// xctest_is_unskippable() and the trait's `.unskippable`.
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
@@ -73,6 +75,9 @@ static bool launches_failed;
 static NSString *current_suite;
 static NSString *current_test;
 static NSMutableSet<NSNumber *> *listed_launches;
+static FILE *unskippable;
+static bool unskippable_failed;
+static NSMutableSet<NSString *> *reported_unskippable;
 
 static const uint8_t *section(const struct mach_header_64 *h, const char *name, unsigned long *size) {
     const uint8_t *p = getsectiondata(h, "__DATA", name, size);
@@ -338,6 +343,41 @@ static void observe_launches(void) {
     });
 }
 
+// Unskippable tests: the tests marked to run even when the skip list names them, so a runner that
+// writes the list can stop listing them. Each unskippable test that runs is appended to
+// unskippable.tsv once, when it starts, as `module\tsuite\tname\tlisted`, named as its record
+// names it; `listed` is 1 when the skip list names it, which makes the run a forced one, and 0
+// otherwise. A name with a tab or a line break isn't written, since it can't be told apart.
+// Called with the lock held.
+static void write_unskippable(const char *module, const char *suite, const char *name, bool listed) {
+    if (unskippable_failed || !out_dir[0] || !module || !suite || !name) return;
+    if (strpbrk(module, "\t\r\n") || strpbrk(suite, "\t\r\n") || strpbrk(name, "\t\r\n")) return;
+    NSString *key = [NSString stringWithFormat:@"%s\t%s\t%s", module, suite, name];
+    if (!key || [reported_unskippable containsObject:key]) return;
+    if (!unskippable) {
+        char file[PATH_MAX];
+        snprintf(file, sizeof file, "%s/unskippable.tsv", out_dir);
+        unskippable = fopen(file, "a");
+        if (!unskippable) {
+            unskippable_failed = true;
+            return;
+        }
+    }
+    if (!reported_unskippable) reported_unskippable = [NSMutableSet set];
+    [reported_unskippable addObject:key];
+    if (fprintf(unskippable, "%s\t%s\t%s\t%d\n", module, suite, name, listed ? 1 : 0) < 0 || fflush(unskippable) != 0) {
+        fclose(unskippable);
+        unskippable = NULL;
+        unskippable_failed = true;
+    }
+}
+
+static void report_unskippable(const char *module, const char *suite, const char *name, bool listed) {
+    pthread_mutex_lock(&lock);
+    write_unskippable(module, suite, name, listed);
+    pthread_mutex_unlock(&lock);
+}
+
 // A process records through one copy of the library, the first to load: a second copy (another
 // test bundle, or a framework that links it too) would observe the same tests twice. The owner
 // publishes its scope functions in the environment, keyed by the process, and the other copies
@@ -345,9 +385,10 @@ static void observe_launches(void) {
 typedef struct {
     void (*begin)(const char *, const char *, const char *);
     void (*end)(const char *, const char *, const char *);
+    void (*report_unskippable)(const char *, const char *, const char *, bool);
 } scope_functions;
 
-static const scope_functions own_functions = {scope_begin, scope_end};
+static const scope_functions own_functions = {scope_begin, scope_end, report_unskippable};
 static const char *const kOwnerVariable = "TEST_COVERAGE_ATTRIBUTION_OWNER";
 
 static const scope_functions *process_owner(void) {
@@ -372,6 +413,11 @@ void test_coverage_attribution_scope_begin(const char *module, const char *suite
 void test_coverage_attribution_scope_end(const char *module, const char *suite, const char *name) {
     const scope_functions *functions = owner();
     if (functions) functions->end(module, suite, name);
+}
+
+void test_coverage_attribution_report_unskippable(const char *module, const char *suite, const char *name, bool listed) {
+    const scope_functions *functions = owner();
+    if (functions) functions->report_unskippable(module, suite, name, listed);
 }
 
 // XCTest's names: `-[Suite test]` for Objective-C, `-[Module.Suite test]` for Swift; the
@@ -412,14 +458,17 @@ static bool is_class_suite(NSString *name) {
 static NSSet<NSString *> *skipped_tests;
 static IMP original_default_test_suite;
 
-static NSString *skip_identifier(NSString *module, NSString *suite, NSString *name) {
+// A test's name without what tells its forms apart: `testAdd()`, `testAddAndReturnError:` and
+// `testAddWithCompletionHandler:` are all `testAdd`.
+static NSString *normalized_test_name(NSString *name) {
     for (NSString *suffix in @[@"()", @"AndReturnError:", @"WithCompletionHandler:"]) {
-        if ([name hasSuffix:suffix]) {
-            name = [name substringToIndex:name.length - suffix.length];
-            break;
-        }
+        if ([name hasSuffix:suffix]) return [name substringToIndex:name.length - suffix.length];
     }
-    return [NSString stringWithFormat:@"%@/%@/%@", module, suite, name];
+    return name;
+}
+
+static NSString *skip_identifier(NSString *module, NSString *suite, NSString *name) {
+    return [NSString stringWithFormat:@"%@/%@/%@", module, suite, normalized_test_name(name)];
 }
 
 static void load_skip_list(void) {
@@ -445,6 +494,52 @@ bool test_coverage_attribution_is_skipped(const char *module, const char *suite,
     return identifier && [skipped_tests containsObject:identifier];
 }
 
+// Unskippable XCTest tests: a class marks them with class methods the observer looks up by name, so
+// the test target needs nothing from the package to declare them, from Swift (`@objc static let`)
+// or Objective-C:
+//   +unskippableTests  NSArray of NSString, tests that always run, in any form the skip list takes;
+//   +skippableTests    NSArray of NSString, tests the skip list can skip under +isUnskippable;
+//   +isUnskippable     BOOL, every test of the class always runs.
+// The most specific wins: a test the lists name follows them, unskippableTests first, and any other
+// follows the class. A subclass inherits them, and overrides them as usual. A method with another
+// return type is ignored.
+
+// The class method's return type, or 0 when the class has no such method.
+static char class_method_type(Class cls, SEL selector) {
+    Method method = class_getClassMethod(cls, selector);
+    if (!method) return 0;
+    char type[8] = {0};
+    method_getReturnType(method, type, sizeof type);
+    return type[0];
+}
+
+static bool class_lists_test(Class cls, NSString *selector_name, NSString *name) {
+    SEL selector = NSSelectorFromString(selector_name);
+    if (class_method_type(cls, selector) != '@') return false;
+    id tests = ((id (*)(Class, SEL))objc_msgSend)(cls, selector);
+    if (![tests isKindOfClass:[NSArray class]]) return false;
+    for (id test in tests) {
+        if ([test isKindOfClass:[NSString class]] && [normalized_test_name(test) isEqualToString:name]) return true;
+    }
+    return false;
+}
+
+static bool class_is_unskippable(Class cls) {
+    SEL selector = NSSelectorFromString(@"isUnskippable");
+    // BOOL is `bool` on arm64 and `signed char` on x86_64.
+    char type = class_method_type(cls, selector);
+    if (type != 'B' && type != 'c') return false;
+    return ((BOOL (*)(Class, SEL))objc_msgSend)(cls, selector);
+}
+
+static bool xctest_is_unskippable(Class cls, NSString *method) {
+    NSString *name = normalized_test_name(method);
+    if (!cls || !name) return false;
+    if (class_lists_test(cls, @"unskippableTests", name)) return true;
+    if (class_lists_test(cls, @"skippableTests", name)) return false;
+    return class_is_unskippable(cls);
+}
+
 // A class's suite holds its tests. When some are listed, the suite is kept and its tests replaced
 // through XCTestSuite's private -setTests:, since the suite is what runs the class setUp and
 // tearDown; an XCTest without it runs every test. When all are listed, an empty suite takes its
@@ -459,7 +554,9 @@ static id suite_without_skipped_tests(Class test_class, id suite) {
         if ([test isKindOfClass:test_case]) {
             NSString *test_suite, *method;
             split_xctest_name([test name], &test_suite, &method);
-            if ([skipped_tests containsObject:skip_identifier(module, test_suite, method)]) continue;
+            if ([skipped_tests containsObject:skip_identifier(module, test_suite, method)]
+                && !xctest_is_unskippable([test class], method))
+                continue;
         }
         [kept addObject:test];
     }
@@ -522,6 +619,19 @@ static void skip_listed_tests(void) {
     split_xctest_name([testCase name], &suite, &method);
     [self gapForSuite:suite];
     [self setScopeSuite:suite test:method];
+    [self reportIfUnskippable:testCase suite:suite method:method];
+}
+
+// The skip list is matched as when the test's class built its suite, with its bundle as the module.
+- (void)reportIfUnskippable:(id)testCase suite:(NSString *)suite method:(NSString *)method {
+    @try {
+        Class test_class = [testCase class];
+        if (!xctest_is_unskippable(test_class, method)) return;
+        NSString *module = [NSBundle bundleForClass:test_class].bundleURL.lastPathComponent.stringByDeletingPathExtension ?: @"";
+        bool listed = [skipped_tests containsObject:skip_identifier(module, suite, method)];
+        report_unskippable(bundle_name, suite.UTF8String, method.UTF8String, listed);
+    } @catch (NSException *exception) {
+    }
 }
 
 - (void)testCaseDidFinish:(id)testCase {

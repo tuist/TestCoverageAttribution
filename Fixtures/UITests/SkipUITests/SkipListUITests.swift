@@ -1,10 +1,12 @@
 import XCTest
 
 // UI tests run by `AttributionTests` with a skip list that names every test called `testSkipped`
-// and every test of `SkippedUITests`. The listed tests pass when they run, so the result bundle
+// or `testUnskippable` and every test of `SkippedUITests`. The listed tests pass when they run, so the result bundle
 // tells which ran; only a class setUp that must not run crashes.
 
 final class PartlySkippedUITests: XCTestCase {
+    @objc static let unskippableTests = ["testUnskippable"]
+
     func testLaunch() {
         let app = XCUIApplication()
         app.launch()
@@ -13,6 +15,8 @@ final class PartlySkippedUITests: XCTestCase {
     }
 
     func testSkipped() {}
+
+    func testUnskippable() {}
 }
 
 /// All of its tests are listed: the class doesn't run, not even its class setUp.

@@ -19,6 +19,10 @@ void test_coverage_attribution_scope_end(const char *module, const char *suite, 
 /// XCTest tests are.
 bool test_coverage_attribution_is_skipped(const char *module, const char *suite, const char *name);
 
+/// Lists the test in `unskippable.tsv`: it's marked to run even when the skip list names it, and
+/// `listed` says whether the list does. Does nothing unless the process collects attribution.
+void test_coverage_attribution_report_unskippable(const char *module, const char *suite, const char *name, bool listed);
+
 #ifdef __cplusplus
 }
 #endif

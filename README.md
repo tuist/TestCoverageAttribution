@@ -99,6 +99,49 @@ TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE="$PWD/skip.txt" xcodebuild test 
 - **What a skipped test looks like.** It's removed from the suite XCTest builds for its class, so it doesn't run and isn't in the result bundle. A class whose tests are all removed doesn't run its class `setUp` and `tearDown`. A class with tests left runs them as usual, class `setUp` included.
 - **Swift Testing.** In a suite with the `.coverageAttribution` trait, a listed test is cancelled before it starts, every argument of a parameterized test included, and reported as skipped, whether tests run in parallel or not. The line names it as the records do: the Swift module, the innermost suite, and the test's display name when it declares one (`Applies a discount`), its function otherwise (`appliesDiscount()`). A display name with a `/` can't be listed. This needs Swift 6.3 (Xcode 26.4) or later: before, a trait can skip a test only by not running it, which reports it as passed, so the listed tests run. Listed tests in suites without the trait run too.
 
+### Unskippable tests
+
+Coverage only sees the code a test runs. A test whose real inputs are something else, such as fixtures, resources, the network or the environment, can break without any covered code changing. Mark it unskippable and it always runs, even when the skip list names it.
+
+**Swift Testing.** Add `.unskippable` to a test, or to a suite to cover every test in it and its nested suites, and `.skippable` to opt a test or a nested suite back in. The most specific one wins: a test's trait overrides its suite's, and a nested suite's overrides its parent's. The suite still needs the `.coverageAttribution` trait, since it's what skips listed tests.
+
+```swift
+@Suite(.coverageAttribution, .unskippable)
+struct FixtureTests {
+    @Test func parsesTheFixtures() { … }               // always runs
+    @Test(.skippable) func formatsTheDate() { … }      // can be skipped
+}
+```
+
+**XCTest.** Declare class methods with these names, which the package looks up at run time, so the test target needs nothing from the package. From Swift they need `@objc`.
+
+| Class method | Type | Meaning |
+| --- | --- | --- |
+| `unskippableTests` | `[String]` / `NSArray<NSString *> *` | The class's tests that always run. |
+| `isUnskippable` | `Bool` / `BOOL` | Every test of the class always runs. |
+| `skippableTests` | `[String]` / `NSArray<NSString *> *` | The tests the list can still skip in a class that's unskippable. |
+
+```swift
+final class FixtureTests: XCTestCase {
+    @objc static let unskippableTests = ["testParsesTheFixtures"]
+}
+
+final class NetworkTests: XCTestCase {
+    @objc static let isUnskippable = true
+    @objc static let skippableTests = ["testFormatsTheDate"]
+}
+```
+
+```objc
+@implementation NetworkTests
++ (BOOL)isUnskippable { return YES; }
+@end
+```
+
+A test is named as in the skip list: `testParsesTheFixtures`, `testParsesTheFixtures()` or its selector. The lists win over the class: a test in `unskippableTests` always runs, a test in `skippableTests` can be skipped, and any other follows `isUnskippable`. A subclass inherits these methods and can override them. A method with a different return type is ignored.
+
+**What the runner sees.** An unskippable test runs and is reported as usual. When the package records, each unskippable test that runs is listed in [`unskippable.tsv`](#output), so a runner that writes the skip list can stop listing it. A listed unskippable test is a *forced run*.
+
 ## Output
 
 The output is written under `$TEST_COVERAGE_ATTRIBUTION_DIR/<pid>/`, one directory per test process:
@@ -109,6 +152,7 @@ The output is written under `$TEST_COVERAGE_ATTRIBUTION_DIR/<pid>/`, one directo
 | `<n>.data`, `<n>.names` | Image `n`'s raw `__llvm_prf_data` and `__llvm_prf_names` sections: what maps a counter to its function. |
 | `records.bin` | One record per scope. |
 | `launches.tsv` | One line per app process a UI test launched, written when `XCUIApplication.launch()` or `activate()` returns: the process's pid, the test bundle, the suite and the test, separated by tabs. A launch outside a test, such as in a class `setUp`, has an empty test name. A pid is listed once, with the scope that launched it, even when later tests activate the same process. Only written by a process that launches an app. |
+| `unskippable.tsv` | One line per unskippable test that ran, written when it starts: the module, the suite and the test, named as in its record (an XCTest test as XCTest names it, `testParsesTheFixtures`), then `1` if the skip list named it (a forced run) or `0` if not, separated by tabs. A test is listed once per process. A name with a tab or a line break isn't written. Only written by a process that runs an unskippable test. |
 
 A scope is one of the following:
 - an XCTest test;
