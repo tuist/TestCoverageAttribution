@@ -26,9 +26,9 @@
 //   launches.tsv   one line per process a UI test launched, see record_launch()
 //
 // Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
-// TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of XCTest tests
-// not to run, which are removed before XCTest runs them. See load_skip_list(). It works with or
-// without recording.
+// TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of tests not to
+// run: XCTest tests are removed before XCTest runs them, and the trait cancels Swift Testing tests.
+// See load_skip_list(). It works with or without recording.
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
@@ -406,8 +406,9 @@ static bool is_class_suite(NSString *name) {
 // The listed tests are removed from +[XCTestCase defaultTestSuite], the suite XCTest builds for
 // each class, both when it lists the tests (parallel runs hand the listed tests out to their
 // clones) and when it runs them. A removed test isn't in the result bundle, and a class whose
-// tests are all removed doesn't run its class setUp. Only XCTest is affected: Swift Testing tests
-// don't go through XCTest's suites.
+// tests are all removed doesn't run its class setUp. Swift Testing tests don't go through XCTest's
+// suites: the `.coverageAttribution` trait asks test_coverage_attribution_is_skipped() and cancels
+// the listed ones.
 static NSSet<NSString *> *skipped_tests;
 static IMP original_default_test_suite;
 
@@ -435,6 +436,13 @@ static void load_skip_list(void) {
         [tests addObject:skip_identifier(components[0], components[1], components[2])];
     }
     if (tests.count > 0) skipped_tests = tests;
+}
+
+// The list is read once, by the constructor, and never changes after: no lock is needed.
+bool test_coverage_attribution_is_skipped(const char *module, const char *suite, const char *name) {
+    if (!skipped_tests || !module || !suite || !name) return false;
+    NSString *identifier = skip_identifier(@(module), @(suite), @(name));
+    return identifier && [skipped_tests containsObject:identifier];
 }
 
 // A class's suite holds its tests. When some are listed, the suite is kept and its tests replaced

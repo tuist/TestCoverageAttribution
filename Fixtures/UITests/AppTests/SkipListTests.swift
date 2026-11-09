@@ -1,3 +1,4 @@
+import TestCoverageAttribution
 import Testing
 import XCTest
 
@@ -44,7 +45,18 @@ final class UnlistedTests: XCTestCase {
     func testRuns() {}
 }
 
-/// Listed too, but Swift Testing tests don't go through XCTest's suites, so it runs.
+/// The trait cancels the listed tests from Swift 6.3 on, which reports them as skipped; before,
+/// they run.
+@Suite(.coverageAttribution)
 struct SwiftTestingTests {
+    @Test func runs() {}
+
+    @Test func skipped() {}
+
+    @Test(arguments: [1, 2]) func skippedWithArguments(value _: Int) {}
+}
+
+/// Listed too, but without the trait nothing reads the list, so it runs.
+struct UntraitedSwiftTestingTests {
     @Test func runs() {}
 }

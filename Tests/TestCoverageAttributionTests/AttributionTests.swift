@@ -142,20 +142,26 @@ struct AttributionTests {
     }
 
     /// Runs one of the packages under `Fixtures`; with SwiftPM, only the tests `filter` matches.
-    /// `inspect` gets the output directory before it is removed.
+    /// `skipList` is the skip file's contents. `inspect` gets the output directory before it is
+    /// removed.
     /// `Concurrency` is a package of its own: Swift Testing runs suites in parallel across the
     /// process, so its tests would overlap the others.
-    private func runFixture(
+    func runFixture(
         _ runner: Runner,
         attributing: Bool,
         fixture name: String = "Example",
         filter: String? = nil,
+        skipList: String? = nil,
         inspect: (URL) throws -> Void = { _ in },
     ) throws -> [Record] {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let output = scratch.appending(path: "output")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let skipFile = scratch.appending(path: "skip.txt")
+        if let skipList {
+            try skipList.write(to: skipFile, atomically: true, encoding: .utf8)
+        }
 
         let fixture = Self.packageRoot.appending(path: "Fixtures/\(name)")
         let build = Self.packageRoot.appending(path: ".build/fixtures/\(name)")
@@ -164,12 +170,14 @@ struct AttributionTests {
         switch runner {
         case .swiftPM:
             environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
+            environment["TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = skipList == nil ? nil : skipFile.path()
             arguments = [
                 "swift", "test", "--package-path", fixture.path(), "--scratch-path", build.appending(path: "swiftpm").path(),
                 "--enable-code-coverage",
             ] + (filter.map { ["--filter", $0] } ?? [])
         case .xcodebuild, .iOSSimulator:
             environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR"] = attributing ? output.path() : nil
+            environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = skipList == nil ? nil : skipFile.path()
             let destination = runner == .iOSSimulator ? "id=\(try Self.iPhoneSimulator(fixture: fixture))" : "platform=macOS"
             arguments = [
                 "xcodebuild", "test", "-scheme", "\(name)-Package", "-destination", destination,

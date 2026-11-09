@@ -12,10 +12,12 @@ extension AttributionTests {
 
     /// The listed XCTest tests of a unit test target hosted in the app and of a UI test target
     /// don't run: they aren't in the result bundle, and a class whose tests are all listed doesn't
-    /// run its class `setUp`, which crashes. The tests left run, after their class `setUp`, and so
-    /// does a listed Swift Testing test.
+    /// run its class `setUp`, which crashes. The tests left run, after their class `setUp`. Built
+    /// with Swift 6.3 or later, the listed Swift Testing tests of a suite with the trait are
+    /// skipped, every argument of a parameterized one included; before, they run. A listed Swift
+    /// Testing test without the trait runs.
     @Test(arguments: SkipListRun.allCases)
-    func removesTheListedXCTestTestsBeforeTheyRun(run: SkipListRun) throws {
+    func skipsTheListedTests(run: SkipListRun) throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scratch) }
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -29,7 +31,9 @@ extension AttributionTests {
 
         AppTests/SkippedTests/testFirst()
         AppTests/SkippedTests/testSecond()
-        AppTests/SwiftTestingTests/runs()
+        AppTests/SwiftTestingTests/skipped()
+        AppTests/SwiftTestingTests/skippedWithArguments(value:)
+        AppTests/UntraitedSwiftTestingTests/runs()
         AppTests/UnlistedTests
         AppTests/MissingTests/testMissing()
         SkipUITests/PartlySkippedUITests/testSkipped()
@@ -38,17 +42,42 @@ extension AttributionTests {
         let resultBundle = scratch.appending(path: "Tests.xcresult")
         try runSkipListScheme(run, skipList: skipList, resultBundle: resultBundle)
 
+        #if compiler(>=6.3)
+            let listedSwiftTesting = "Skipped"
+        #else
+            let listedSwiftTesting = "Passed"
+        #endif
         let results = try Self.testResults(in: resultBundle)
-        #expect(results.allSatisfy { $0.result == "Passed" }, "\(results)")
-        #expect(results.map(\.identifier).sorted() == (run == .shard ? [
-            "AppTests/PartlySkippedTests/testRuns()",
-            "SkipUITests/PartlySkippedUITests/testLaunch()",
+        #expect(results.map(\.description).sorted() == (run == .shard ? [
+            "AppTests/PartlySkippedTests/testRuns() Passed",
+            "SkipUITests/PartlySkippedUITests/testLaunch() Passed",
         ] : [
-            "AppTests/PartlySkippedTests/testRuns()",
-            "AppTests/SwiftTestingTests/runs()",
-            "AppTests/UnlistedTests/testRuns()",
-            "SkipUITests/PartlySkippedUITests/testLaunch()",
+            "AppTests/PartlySkippedTests/testRuns() Passed",
+            "AppTests/SwiftTestingTests/runs() Passed",
+            "AppTests/SwiftTestingTests/skipped() \(listedSwiftTesting)",
+            "AppTests/SwiftTestingTests/skippedWithArguments(value:) \(listedSwiftTesting)",
+            "AppTests/UnlistedTests/testRuns() Passed",
+            "AppTests/UntraitedSwiftTestingTests/runs() Passed",
+            "SkipUITests/PartlySkippedUITests/testLaunch() Passed",
         ]))
+    }
+
+    /// Built with Swift 6.3 or later, the trait cancels a listed Swift Testing test before it
+    /// starts, so it leaves no record; before, it runs. The list names it by its display name.
+    @Test func skipsTheListedSwiftTestingTests() throws {
+        let records = try runFixture(
+            .swiftPM,
+            attributing: true,
+            skipList: "ExampleTests/MultiplicationTests/Multiplying by zero\n",
+        )
+        let names = records.filter { $0.kind == .swiftTesting }.map(\.name)
+
+        #expect(names.contains("multiply()"))
+        #if compiler(>=6.3)
+            #expect(!names.contains("Multiplying by zero"))
+        #else
+            #expect(names.contains("Multiplying by zero"))
+        #endif
     }
 
     /// Without a skip list, every test runs, those the list would name included.
