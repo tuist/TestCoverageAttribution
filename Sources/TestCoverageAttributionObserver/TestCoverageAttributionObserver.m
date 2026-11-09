@@ -982,8 +982,12 @@ static void start_skipping(void) {
 
 __attribute__((constructor)) static void test_coverage_attribution_init(void) {
     start_skipping();
-    const char *dir = getenv("TEST_COVERAGE_ATTRIBUTION_DIR");
-    if (!dir || !*dir || process_owner() != &own_functions || legacy_owner) return;
+    const char *env_dir = getenv("TEST_COVERAGE_ATTRIBUTION_DIR");
+    if (!env_dir || !*env_dir) return;
+    // process_owner() may setenv, which can invalidate what getenv returned.
+    char dir[PATH_MAX];
+    if ((size_t)snprintf(dir, sizeof dir, "%s", env_dir) >= sizeof dir) return;
+    if (process_owner() != &own_functions || legacy_owner) return;
     mkdir(dir, 0755);
     snprintf(out_dir, sizeof out_dir, "%s/%d", dir, getpid());
     mkdir(out_dir, 0755);
