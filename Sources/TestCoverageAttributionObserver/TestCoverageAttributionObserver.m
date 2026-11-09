@@ -24,6 +24,13 @@
 //   <n>.names      the image's raw __llvm_prf_names section
 //   records.bin    one record per scope, see write_record()
 //   launches.tsv   one line per process a UI test launched, see record_launch()
+//   functions.tsv  one line per image built with function-entry tracking, see list_function_images()
+//   functions.bin  one record per Swift Testing test case and for the floor, see write_functions_record()
+//
+// Swift Testing runs a process's tests in parallel, which the process-wide counters can't tell
+// apart. Code compiled with `-sanitize-coverage=func,trace-pc-guard,pc-table` calls back on every
+// function entry, and the callback attributes the function to the test whose task is running, read
+// from the trait's TaskLocal: async hops, child tasks and `Task {}` keep it. See "Functions per task".
 //
 // Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
 // TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of XCTest tests
@@ -38,12 +45,13 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-enum { kRecordGap = 0, kRecordXCTest = 1, kRecordSwiftTesting = 2 };
-enum { kFlagOverlapped = 1 };
+enum { kRecordGap = 0, kRecordXCTest = 1, kRecordSwiftTesting = 2, kRecordFunctions = 3 };
+enum { kFlagOverlapped = 1, kFlagFloor = 2 };
 // 1: each image's counter indices are followed by how much each counter moved.
 enum { kRecordVersion = 1 };
 
@@ -84,15 +92,21 @@ static const uint8_t *section(const struct mach_header_64 *h, const char *name, 
 // Recording stops at the first thing that fails, and what was written for the process is removed:
 // a reader then finds no output for it, rather than records whose counters it can't map, which
 // would read as tests that ran nothing. The tests run on as if nothing were linked.
+static FILE *function_list;
+static FILE *function_records;
+
 static void stop_recording(void) {
     if (!records) return;
     fclose(records);
     records = NULL;
+    if (function_list) fclose(function_list);
+    if (function_records) fclose(function_records);
+    function_list = function_records = NULL;
     char file[PATH_MAX];
-    snprintf(file, sizeof file, "%s/images.tsv", out_dir);
-    unlink(file);
-    snprintf(file, sizeof file, "%s/records.bin", out_dir);
-    unlink(file);
+    for (const char **name = (const char *[]){"images.tsv", "records.bin", "functions.tsv", "functions.bin", NULL}; *name; name++) {
+        snprintf(file, sizeof file, "%s/%s", out_dir, *name);
+        unlink(file);
+    }
 }
 
 // Whether the section is written in full; an image without it has nothing to write.
@@ -257,6 +271,303 @@ static void scope_end(const char *module, const char *suite, const char *name) {
     pthread_mutex_unlock(&lock);
 }
 
+// MARK: Functions per task
+//
+// SanitizerCoverage numbers a guard per function of every image compiled with
+// `func,trace-pc-guard,pc-table` and calls the guard callback on each entry. The callbacks
+// SanitizerCoverage names are defined in the TestCoverageAttribution module, which every test target
+// links directly, and forward here (see SanitizerCoverage.swift). The callback reads the
+// running task's context, the TaskLocal the trait binds around each Swift Testing test case, and
+// sets the function's bit in that context's set. A test's child tasks, its `Task {}`s and the actors
+// it awaits run under its task's TaskLocals, so their functions count for it however many tests run
+// at once. When a context ends, its functions are written as one record.
+//
+// What no test's task runs, work on a GCD queue or a thread, a `Task.detached`, a suite's setup
+// outside any test, goes to the floor, context 0, written whenever no context is open: any test of
+// the process may depend on it. Nothing is tracked before the first context opens or while an
+// XCTest test runs, whose counters say what it ran.
+//
+// The task and its TaskLocal are read through the Swift concurrency runtime, looked up at run time
+// so this library links no Swift. No cache: a task's address is reused once it ends.
+
+typedef void *(*current_task_function)(void) __attribute__((swiftcall));
+typedef void *(*task_local_value_function)(const void *key) __attribute__((swiftcall));
+
+typedef struct {
+    uint32_t first_guard;
+    uint32_t guard_count;
+    uintptr_t base;
+    const uintptr_t *pcs;
+    char *path;
+} function_image;
+
+enum { kMaxFunctionImages = 4096, kMaxContexts = 1 << 20, kNoContext = UINT32_MAX };
+
+static function_image function_images[kMaxFunctionImages];
+static unsigned function_images_count;
+static unsigned function_images_listed;
+static uint32_t guards_numbered;
+static pthread_mutex_t guards_lock = PTHREAD_MUTEX_INITIALIZER;
+// Guards above this aren't tracked: zero until the first context opens, so the callback costs one
+// comparison until then; guards numbered later (an image loaded late) are left out.
+static _Atomic uint32_t tracked_guards;
+static size_t bitset_words;
+static _Atomic(uint64_t *) *context_bits;
+static char **context_names;
+static uint32_t *late_contexts;
+static size_t late_count;
+static size_t late_capacity;
+static uint64_t *floor_written;
+static uint32_t next_context = 1;
+static unsigned open_contexts;
+static const void *_Atomic context_key;
+static current_task_function get_current_task;
+static task_local_value_function task_local_value;
+static atomic_bool xctest_running;
+// A context whose test ended: a hit after that (a task the test left running) reopens it.
+static uint64_t *const closed_context = (uint64_t *)1;
+
+static uint64_t *new_bitset(void) {
+    return calloc(bitset_words, sizeof(uint64_t));
+}
+
+static void own_trace_pc_guard_init(uint32_t *start, uint32_t *stop) {
+    if (start == stop || *start) return;
+    pthread_mutex_lock(&guards_lock);
+    uint32_t first = guards_numbered + 1;
+    for (uint32_t *guard = start; guard < stop; guard++) *guard = ++guards_numbered;
+    Dl_info info;
+    if (function_images_count < kMaxFunctionImages && dladdr(start, &info) && info.dli_fbase) {
+        function_images[function_images_count++] = (function_image){
+            first, (uint32_t)(stop - start), (uintptr_t)info.dli_fbase, NULL, strdup(info.dli_fname ?: ""),
+        };
+    }
+    pthread_mutex_unlock(&guards_lock);
+}
+
+// The PC table holds a (PC, flags) pair per guard, in guard order, for the image whose guards
+// were numbered last with as many guards.
+static void own_pcs_init(const uintptr_t *start, const uintptr_t *end) {
+    uint32_t count = (uint32_t)((end - start) / 2);
+    Dl_info info;
+    if (!dladdr(start, &info)) return;
+    pthread_mutex_lock(&guards_lock);
+    for (unsigned i = function_images_count; i > 0; i--) {
+        function_image *image = &function_images[i - 1];
+        if (!image->pcs && image->guard_count == count && image->base == (uintptr_t)info.dli_fbase) {
+            image->pcs = start;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&guards_lock);
+}
+
+static uint32_t current_context(void) {
+    if (atomic_load_explicit(&xctest_running, memory_order_relaxed)) return kNoContext;
+    void *task = get_current_task ? get_current_task() : NULL;
+    const void *key = atomic_load_explicit(&context_key, memory_order_relaxed);
+    if (task && key) {
+        const uint32_t *value = task_local_value(key);
+        if (value && *value) return *value;
+    }
+    return 0;
+}
+
+static uint64_t *reopen_context(uint32_t context);
+
+static void own_trace_pc_guard(uint32_t *guard) {
+    uint32_t number = *guard;
+    if (number == 0 || number > atomic_load_explicit(&tracked_guards, memory_order_relaxed)) return;
+    uint32_t context = current_context();
+    if (context >= kMaxContexts) return;
+    uint64_t *bits = atomic_load_explicit(&context_bits[context], memory_order_acquire);
+    if (!bits || bits == closed_context) bits = reopen_context(context);
+    if (!bits) return;
+    uint64_t mask = 1ull << (number & 63);
+    _Atomic uint64_t *word = (_Atomic uint64_t *)&bits[number >> 6];
+    if (!(atomic_load_explicit(word, memory_order_relaxed) & mask)) atomic_fetch_or_explicit(word, mask, memory_order_relaxed);
+}
+
+// The floor's set, made when it's first hit, and a finished context's, made again for a hit that
+// arrives after its record was written. Both are written the next time no context is open.
+static uint64_t *reopen_context(uint32_t context) {
+    pthread_mutex_lock(&lock);
+    uint64_t *bits = atomic_load(&context_bits[context]);
+    if (!bits || bits == closed_context) {
+        bool late = bits == closed_context;
+        bits = new_bitset();
+        if (bits && late) {
+            if (late_count == late_capacity) {
+                size_t capacity = late_capacity ? late_capacity * 2 : 16;
+                uint32_t *grown = realloc(late_contexts, capacity * sizeof(uint32_t));
+                if (!grown) {
+                    free(bits);
+                    pthread_mutex_unlock(&lock);
+                    return NULL;
+                }
+                late_contexts = grown;
+                late_capacity = capacity;
+            }
+            late_contexts[late_count++] = context;
+        }
+        if (bits) atomic_store_explicit(&context_bits[context], bits, memory_order_release);
+    }
+    pthread_mutex_unlock(&lock);
+    return bits;
+}
+
+// functions.tsv: `index\tguards\tpath`, one line per image with function-entry tracking, written
+// before the first record that names it. Function records go to a file of their own, functions.bin,
+// so a reader of records.bin that predates them never meets one.
+static bool list_function_images(void) {
+    char file[PATH_MAX];
+    if (!function_records) {
+        snprintf(file, sizeof file, "%s/functions.bin", out_dir);
+        function_records = fopen(file, "wb");
+        if (!function_records) return false;
+    }
+    if (function_images_listed == function_images_count) return true;
+    if (!function_list) {
+        snprintf(file, sizeof file, "%s/functions.tsv", out_dir);
+        function_list = fopen(file, "w");
+        if (!function_list) return false;
+    }
+    bool ok = true;
+    for (; ok && function_images_listed < function_images_count; function_images_listed++) {
+        function_image *image = &function_images[function_images_listed];
+        ok = fprintf(function_list, "%u\t%u\t%s\n", function_images_listed, image->guard_count, image->path) >= 0;
+    }
+    return ok && fflush(function_list) == 0;
+}
+
+// functions.bin record: the header and names as write_record()'s, kind 3, then u32 image count and per image the
+// u32 index functions.tsv gives it, u32 count and count u32 offsets from the image's base, each the
+// address the PC table gives the function a test entered. `written`, when given, limits it to the
+// bits not written before and marks them written. Called with the lock held.
+static void write_functions_record(uint8_t flags, const char *module, const char *suite, const char *name, const uint64_t *bits,
+                                   uint64_t *written) {
+    if (!records) return;
+    record_length = 0;
+    uint8_t header[4] = {kRecordFunctions, flags, kRecordVersion, 0};
+    uint32_t touched_images = 0;
+    bool ok = list_function_images() && append(header, sizeof header) && append_string(module) && append_string(suite)
+        && append_string(name);
+    size_t count_offset = record_length;
+    ok = ok && append(&touched_images, sizeof touched_images);
+    uint32_t tracked = atomic_load(&tracked_guards);
+    for (unsigned i = 0; ok && i < function_images_count; i++) {
+        function_image *image = &function_images[i];
+        if (!image->pcs) continue;
+        size_t index_offset = record_length;
+        uint32_t index = i, count = 0;
+        ok = append(&index, sizeof index) && append(&count, sizeof count);
+        for (uint32_t g = 0; ok && g < image->guard_count; g++) {
+            uint32_t number = image->first_guard + g;
+            if (number > tracked) break;
+            uint64_t mask = 1ull << (number & 63);
+            uint64_t word = atomic_load_explicit((_Atomic uint64_t *)&bits[number >> 6], memory_order_relaxed);
+            if (!(word & mask) || (written && (written[number >> 6] & mask))) continue;
+            if (written) written[number >> 6] |= mask;
+            uint32_t offset = (uint32_t)(image->pcs[2 * g] - image->base);
+            ok = append(&offset, sizeof offset);
+            count++;
+        }
+        if (!ok) break;
+        if (count == 0) {
+            record_length = index_offset;
+        } else {
+            memcpy(record_buffer + index_offset + sizeof index, &count, sizeof count);
+            touched_images++;
+        }
+    }
+    if (ok && touched_images == 0 && (flags & kFlagFloor)) return;
+    if (ok) {
+        memcpy(record_buffer + count_offset, &touched_images, sizeof touched_images);
+        ok = fwrite(record_buffer, 1, record_length, function_records) == record_length && fflush(function_records) == 0;
+    }
+    if (!ok) stop_recording();
+}
+
+// Names a context's record: module, suite and name, as the trait passes them for its scope.
+static char *context_name(const char *module, const char *suite, const char *name) {
+    size_t size = strlen(module) + strlen(suite) + strlen(name) + 3;
+    char *joined = malloc(size);
+    if (joined) snprintf(joined, size, "%s%c%s%c%s", module, 0, suite, 0, name);
+    return joined;
+}
+
+static void write_context(uint32_t context, const uint64_t *bits) {
+    const char *module = context_names[context];
+    if (!module) return;
+    const char *suite = module + strlen(module) + 1;
+    const char *name = suite + strlen(suite) + 1;
+    write_functions_record(0, module, suite, name, bits, NULL);
+}
+
+// Called with the lock held, when no context is open: what the floor gained since it was last
+// written, and the functions finished tests' tasks entered after their records.
+static void write_floor_and_late_contexts(void) {
+    uint64_t *floor_bits = atomic_load(&context_bits[0]);
+    if (floor_bits) {
+        if (!floor_written) floor_written = new_bitset();
+        if (floor_written) write_functions_record(kFlagFloor, "", "", "", floor_bits, floor_written);
+    }
+    for (size_t i = 0; i < late_count; i++) {
+        uint32_t context = late_contexts[i];
+        uint64_t *bits = atomic_exchange(&context_bits[context], closed_context);
+        if (bits && bits != closed_context) {
+            write_context(context, bits);
+            free(bits);
+        }
+    }
+    late_count = 0;
+}
+
+static uint32_t own_context_begin(const char *module, const char *suite, const char *name, const void *key) {
+    pthread_mutex_lock(&lock);
+    uint32_t context = 0;
+    if (records && guards_numbered > 0 && next_context < kMaxContexts) {
+        if (!context_bits) {
+            get_current_task = (current_task_function)dlsym(RTLD_DEFAULT, "swift_task_getCurrent");
+            task_local_value = (task_local_value_function)dlsym(RTLD_DEFAULT, "swift_task_localValueGet");
+            bitset_words = guards_numbered / 64 + 1;
+            context_bits = calloc(kMaxContexts, sizeof *context_bits);
+            context_names = calloc(kMaxContexts, sizeof *context_names);
+            if (!context_bits || !context_names || !get_current_task || !task_local_value) {
+                free(context_bits);
+                free(context_names);
+                context_bits = NULL;
+                context_names = NULL;
+                pthread_mutex_unlock(&lock);
+                return 0;
+            }
+            atomic_store(&context_key, key);
+            atomic_store(&tracked_guards, guards_numbered);
+        }
+        uint64_t *bits = new_bitset();
+        if (bits) {
+            context = next_context++;
+            context_names[context] = context_name(module, suite, name);
+            atomic_store_explicit(&context_bits[context], bits, memory_order_release);
+            open_contexts++;
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    return context;
+}
+
+static void own_context_end(uint32_t context) {
+    if (context == 0 || context >= kMaxContexts || !context_bits) return;
+    pthread_mutex_lock(&lock);
+    uint64_t *bits = atomic_exchange(&context_bits[context], closed_context);
+    if (bits && bits != closed_context) {
+        write_context(context, bits);
+        free(bits);
+    }
+    if (open_contexts > 0 && --open_contexts == 0) write_floor_and_late_contexts();
+    pthread_mutex_unlock(&lock);
+}
+
 // UI tests: the app a test drives runs in a process of its own, which the observer can't see.
 // Xcode profiles that process on its own (`<uuid>-<pid>.profraw` beside the run's merged profile),
 // so recording which test launched which process is enough for a reader to attribute it. Each
@@ -338,40 +649,119 @@ static void observe_launches(void) {
     });
 }
 
-// A process records through one copy of the library, the first to load: a second copy (another
-// test bundle, or a framework that links it too) would observe the same tests twice. The owner
-// publishes its scope functions in the environment, keyed by the process, and the other copies
-// forward to them, so the trait works from whichever copy it was linked with.
+// A process records through one copy of the library: a second copy (another test bundle, or a
+// framework that links it too) would observe the same tests twice, and number the guards of the
+// images linked against it on its own. The owner is the first copy that needs one, from its
+// constructor or from a guard init that runs before any constructor. It publishes its functions in
+// the environment, keyed by the process, and the other copies forward to them, so the trait and
+// the guard callbacks work from whichever copy an image was linked with.
+//
+// `size` is the table's size in the copy that published it, so a copy reads only the functions the
+// owner has. Copies before function tracking publish a table of scope functions only, under
+// kLegacyOwnerVariable; a copy that finds one forwards its scopes there and tracks no functions.
 typedef struct {
     void (*begin)(const char *, const char *, const char *);
     void (*end)(const char *, const char *, const char *);
 } scope_functions;
 
-static const scope_functions own_functions = {scope_begin, scope_end};
-static const char *const kOwnerVariable = "TEST_COVERAGE_ATTRIBUTION_OWNER";
+typedef struct {
+    size_t size;
+    void (*scope_begin)(const char *, const char *, const char *);
+    void (*scope_end)(const char *, const char *, const char *);
+    void (*trace_pc_guard_init)(uint32_t *, uint32_t *);
+    void (*pcs_init)(const uintptr_t *, const uintptr_t *);
+    void (*trace_pc_guard)(uint32_t *);
+    uint32_t (*context_begin)(const char *, const char *, const char *, const void *);
+    void (*context_end)(uint32_t);
+} owner_functions;
 
-static const scope_functions *process_owner(void) {
-    const char *value = getenv(kOwnerVariable);
+static const scope_functions own_scope_functions = {scope_begin, scope_end};
+static const owner_functions own_functions = {
+    sizeof(owner_functions), scope_begin, scope_end, own_trace_pc_guard_init, own_pcs_init, own_trace_pc_guard,
+    own_context_begin, own_context_end,
+};
+static const char *const kLegacyOwnerVariable = "TEST_COVERAGE_ATTRIBUTION_OWNER";
+static const char *const kOwnerVariable = "TEST_COVERAGE_ATTRIBUTION_OWNER_2";
+static const owner_functions *_Atomic resolved_owner;
+static const scope_functions *legacy_owner;
+static pthread_mutex_t owner_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static const void *published(const char *variable) {
+    const char *value = getenv(variable);
     if (!value) return NULL;
     long long pid = 0;
     unsigned long long address = 0;
     if (sscanf(value, "%lld:%llx", &pid, &address) != 2 || pid != getpid()) return NULL;
-    return (const scope_functions *)(uintptr_t)address;
+    return (const void *)(uintptr_t)address;
 }
 
-static const scope_functions *owner(void) {
-    if (records) return &own_functions;
-    return process_owner();
+static void publish(const char *variable, const void *table) {
+    char value[64];
+    snprintf(value, sizeof value, "%d:%llx", getpid(), (unsigned long long)(uintptr_t)table);
+    setenv(variable, value, 1);
 }
+
+static const owner_functions *process_owner(void) {
+    const owner_functions *functions = atomic_load(&resolved_owner);
+    if (functions) return functions;
+    pthread_mutex_lock(&owner_lock);
+    functions = atomic_load(&resolved_owner);
+    if (!functions) {
+        functions = published(kOwnerVariable);
+        if (!functions) {
+            legacy_owner = published(kLegacyOwnerVariable);
+            if (!legacy_owner) publish(kLegacyOwnerVariable, &own_scope_functions);
+            publish(kOwnerVariable, &own_functions);
+            functions = &own_functions;
+        }
+        atomic_store(&resolved_owner, functions);
+    }
+    pthread_mutex_unlock(&owner_lock);
+    return functions;
+}
+
+#define OWNER_HAS(functions, field) ((functions)->size >= offsetof(owner_functions, field) + sizeof((functions)->field))
 
 void test_coverage_attribution_scope_begin(const char *module, const char *suite, const char *name) {
-    const scope_functions *functions = owner();
-    if (functions) functions->begin(module, suite, name);
+    const owner_functions *functions = process_owner();
+    if (functions == &own_functions && legacy_owner) legacy_owner->begin(module, suite, name);
+    else functions->scope_begin(module, suite, name);
 }
 
 void test_coverage_attribution_scope_end(const char *module, const char *suite, const char *name) {
-    const scope_functions *functions = owner();
-    if (functions) functions->end(module, suite, name);
+    const owner_functions *functions = process_owner();
+    if (functions == &own_functions && legacy_owner) legacy_owner->end(module, suite, name);
+    else functions->scope_end(module, suite, name);
+}
+
+uint32_t test_coverage_attribution_context_begin(const char *module, const char *suite, const char *name, const void *key) {
+    const owner_functions *functions = process_owner();
+    return OWNER_HAS(functions, context_begin) ? functions->context_begin(module, suite, name, key) : 0;
+}
+
+void test_coverage_attribution_context_end(uint32_t context) {
+    const owner_functions *functions = process_owner();
+    if (OWNER_HAS(functions, context_end)) functions->context_end(context);
+}
+
+void test_coverage_attribution_trace_pc_guard_init(uint32_t *start, uint32_t *stop) {
+    const owner_functions *functions = process_owner();
+    if (OWNER_HAS(functions, trace_pc_guard_init)) functions->trace_pc_guard_init(start, stop);
+}
+
+void test_coverage_attribution_pcs_init(const uintptr_t *start, const uintptr_t *end) {
+    const owner_functions *functions = process_owner();
+    if (OWNER_HAS(functions, pcs_init)) functions->pcs_init(start, end);
+}
+
+void test_coverage_attribution_trace_pc_guard(uint32_t *guard) {
+    const owner_functions *functions = atomic_load_explicit(&resolved_owner, memory_order_relaxed);
+    if (functions == &own_functions) {
+        own_trace_pc_guard(guard);
+        return;
+    }
+    if (!functions) functions = process_owner();
+    if (OWNER_HAS(functions, trace_pc_guard)) functions->trace_pc_guard(guard);
 }
 
 // XCTest's names: `-[Suite test]` for Objective-C, `-[Module.Suite test]` for Swift; the
@@ -514,6 +904,7 @@ static void skip_listed_tests(void) {
     split_xctest_name([testCase name], &suite, &method);
     [self gapForSuite:suite];
     [self setScopeSuite:suite test:method];
+    atomic_store(&xctest_running, true);
 }
 
 - (void)testCaseDidFinish:(id)testCase {
@@ -523,6 +914,7 @@ static void skip_listed_tests(void) {
     write_record(kRecordXCTest, 0, bundle_name, suite.UTF8String, method.UTF8String);
     take_snapshot();
     pthread_mutex_unlock(&lock);
+    atomic_store(&xctest_running, false);
     [self setScopeSuite:suite test:nil];
 }
 
@@ -590,8 +982,12 @@ static void start_skipping(void) {
 
 __attribute__((constructor)) static void test_coverage_attribution_init(void) {
     start_skipping();
-    const char *dir = getenv("TEST_COVERAGE_ATTRIBUTION_DIR");
-    if (!dir || !*dir || process_owner()) return;
+    const char *env_dir = getenv("TEST_COVERAGE_ATTRIBUTION_DIR");
+    if (!env_dir || !*env_dir) return;
+    // process_owner() may setenv, which can invalidate what getenv returned.
+    char dir[PATH_MAX];
+    if ((size_t)snprintf(dir, sizeof dir, "%s", env_dir) >= sizeof dir) return;
+    if (process_owner() != &own_functions || legacy_owner) return;
     mkdir(dir, 0755);
     snprintf(out_dir, sizeof out_dir, "%s/%d", dir, getpid());
     mkdir(out_dir, 0755);
@@ -599,9 +995,6 @@ __attribute__((constructor)) static void test_coverage_attribution_init(void) {
     snprintf(file, sizeof file, "%s/records.bin", out_dir);
     records = fopen(file, "wb");
     if (!records) return;
-    char value[64];
-    snprintf(value, sizeof value, "%d:%llx", getpid(), (unsigned long long)(uintptr_t)&own_functions);
-    setenv(kOwnerVariable, value, 1);
     // A test bundle loads after XCTest, so the observer joins before the bundle's first test,
     // as a bundle's principal class would. In a process that loads XCTest later, the main queue
     // runs once it is up.

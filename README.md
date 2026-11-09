@@ -9,7 +9,7 @@ TestCoverageAttribution records which code each test executes. Xcode's code cove
 
 [Tuist](https://tuist.dev) uses it to collect per-test coverage evidence, which lets a run that skips tests reuse those tests' coverage from an earlier run, and to skip the tests a change can't affect.
 
-Both work for XCTest tests, UI tests included. Swift Testing tests run as usual: they get no per-test evidence and are never skipped one by one.
+Both work for XCTest tests, UI tests included. Swift Testing tests get per-test evidence with the `.coverageAttribution` trait, even while they run in parallel, but are never skipped one by one.
 
 ## Installation
 
@@ -43,7 +43,29 @@ The package records on Apple platforms only. Elsewhere, such as Linux, it builds
 
 **UI tests** need nothing else either. The app a UI test drives runs in a process of its own, which the package can't observe, but Xcode profiles that process separately when code coverage is on. The package records which test launched which app process, so a reader such as Tuist can attribute the app's coverage to the test. See [`launches.tsv`](#output).
 
-**Swift Testing** isn't supported. Swift Testing tests run as usual, and their coverage is in the run's report as always, but no test-scoped evidence is recorded for them and the skip list doesn't apply to them. Swift Testing has no observation center a library can join, it runs tests in parallel within a process by default, and a trait has no public way to skip a test.
+**Swift Testing** needs the `.coverageAttribution` trait on the tests or suites to attribute, since Swift Testing has no observation center a library can join:
+
+```swift
+import TestCoverageAttribution
+import Testing
+
+@Suite(.coverageAttribution)
+struct CheckoutTests { ... }
+```
+
+The trait applies to every test of a suite, nested suites included. Put it on every suite of the target, and on the suite rather than the test: a Swift Testing test without it runs outside any test's context, so what it executes counts for every test of its process, and traits listed before it on a test (such as one that sets up mocks) run outside the test's context too.
+
+A test that runs alone in its process gets a counter record like an XCTest test. Swift Testing runs a process's tests in parallel by default, though, and tests that overlap share the counters, so their records are marked overlapped. To tell them apart, build the code under test, and the test target, with function-entry tracking:
+
+```
+-sanitize=undefined -sanitize-coverage=func,trace-pc-guard,pc-table
+```
+
+Each function entry then calls into the package, which attributes the function to the test whose task runs it: the test's own task, its child tasks, `Task {}`s and the actors it awaits. What no test's task runs (a GCD queue, a thread, a `Task.detached`, a suite's setup) goes to a *floor* every test of the process may depend on. Each test case gets a function record in [`functions.bin`](#output). Function records name functions, not lines: counts can't be split between tests that run the same function at once. `-sanitize=undefined` adds no checks to Swift code; the Swift driver needs some sanitizer to accept `-sanitize-coverage`.
+
+Tracked code calls back into the package, so only build code with it that's linked into test targets that link the package. An app or framework that links it fails to link. Tuist turns it on for the eligible targets of a run that collects evidence.
+
+The skip list doesn't apply to Swift Testing tests: a trait has no public way to skip a test.
 
 ## When it records
 
@@ -96,6 +118,8 @@ The output is written under `$TEST_COVERAGE_ATTRIBUTION_DIR/<pid>/`, one directo
 | `images.tsv` | One line per instrumented image: its index, the byte size of its counters, the addresses of its `__llvm_prf_data` and `__llvm_prf_cnts` sections, and its path. |
 | `<n>.data`, `<n>.names` | Image `n`'s raw `__llvm_prf_data` and `__llvm_prf_names` sections: what maps a counter to its function. |
 | `records.bin` | One record per scope. |
+| `functions.tsv` | One line per image built with function-entry tracking: its index, its number of functions, and its path. Only written with function-entry tracking. |
+| `functions.bin` | One function record per Swift Testing test case, and for the floor. Only written with function-entry tracking. |
 | `launches.tsv` | One line per app process a UI test launched, written when `XCUIApplication.launch()` or `activate()` returns: the process's pid, the test bundle, the suite and the test, separated by tabs. A launch outside a test, such as in a class `setUp`, has an empty test name. A pid is listed once, with the scope that launched it, even when later tests activate the same process. Only written by a process that launches an app. |
 
 A scope is one of the following:
@@ -111,6 +135,8 @@ Each record is laid out in the host's byte order, little-endian on every Apple p
 
 The deltas are what turns counters into lines. In the image's coverage mapping (`__llvm_covfun`), a region's count is an expression over counters, so knowing which counters moved isn't enough.
 
+A function record has the same header and names, kind `3`, and flags `2` for the floor, whose names are empty. Then a `u32` count of images, and for each image its `u32` index in `functions.tsv`, a `u32` count, and `count` `u32` offsets. Each offset is the address SanitizerCoverage's PC table gives a function the test's task entered, less the address the image loaded at. A reader names the function from the image's symbol table. An async function's continuations have no symbol of their own and follow the function's.
+
 ## Guarantees
 
 - It never resets or writes the coverage counters: Xcode's and SwiftPM's own coverage reports are unchanged.
@@ -119,7 +145,8 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 
 ## Limitations
 
-- **Swift Testing isn't attributed or skipped.** See [Usage](#usage).
+- **Swift Testing tests aren't skipped.** See [Usage](#usage).
+- **A Swift Testing test running in parallel gets functions, not lines**, and only from code built with function-entry tracking. A static or global's one-time initializer counts only for the test that ran it first.
 - **Skipping some of a class's tests uses a private method.** XCTest has no public way to remove tests from a class's suite, so the package uses `XCTestSuite`'s private `-setTests:`, which keeps the suite and the class `setUp` it runs. If a future Xcode removes it, a class with some tests listed runs all of them; a class with all of its tests listed is still skipped. A class that overrides `defaultTestSuite` without calling `super` isn't filtered.
 - **UI tests record which app process each test launched, not the app's counters.** The app's coverage comes from the profile Xcode writes for each app process (`<uuid>-<pid>.profraw` beside the run's `Coverage.profdata`). The pid is read from `XCUIApplication`'s private `processID` property; if a future Xcode removes it, nothing is written. Processes the app starts itself, such as extensions, aren't listed.
 - **Images loaded late aren't observed.** An image loaded after the first test starts, such as a framework the tests `dlopen`, is missing from the records.
