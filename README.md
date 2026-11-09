@@ -9,7 +9,7 @@ TestCoverageAttribution records which code each test executes. Xcode's code cove
 
 [Tuist](https://tuist.dev) uses it to collect per-test coverage evidence, which lets a run that skips tests reuse those tests' coverage from an earlier run, and to skip the tests a change can't affect.
 
-Both work for XCTest tests, UI tests included. Swift Testing tests run as usual: they get no per-test evidence and are never skipped one by one.
+Both work for XCTest tests, UI tests included. Swift Testing tests get them in suites that have the `.coverageAttribution` trait: evidence when a test doesn't run at the same time as another, and skipping with Swift 6.3 (Xcode 26.4) or later.
 
 ## Installation
 
@@ -43,7 +43,19 @@ The package records on Apple platforms only. Elsewhere, such as Linux, it builds
 
 **UI tests** need nothing else either. The app a UI test drives runs in a process of its own, which the package can't observe, but Xcode profiles that process separately when code coverage is on. The package records which test launched which app process, so a reader such as Tuist can attribute the app's coverage to the test. See [`launches.tsv`](#output).
 
-**Swift Testing** isn't supported. Swift Testing tests run as usual, and their coverage is in the run's report as always, but no test-scoped evidence is recorded for them and the skip list doesn't apply to them. Swift Testing has no observation center a library can join, it runs tests in parallel within a process by default, and a trait has no public way to skip a test.
+**Swift Testing** needs the `.coverageAttribution` trait on each suite, because Swift Testing has no observation center a library can join. The trait applies to the suites nested in the one that has it.
+
+```swift
+import TestCoverageAttribution
+import Testing
+
+@Suite(.coverageAttribution)
+struct DiscountTests {
+    @Test func appliesDiscount() { … }
+}
+```
+
+Swift Testing runs tests in parallel within a process by default, and the counters can't tell tests that run at the same time apart: their records are marked overlapped, and a reader should give them no evidence. A test gets evidence when no other test runs at the same time, as in a run with parallelization off; `.serialized` only orders a suite's own tests. Tests in suites without the trait run as usual and get none.
 
 ## When it records
 
@@ -68,7 +80,7 @@ Supported platforms are macOS and the iOS simulator. On a device, the process ca
 
 ## Skipping tests
 
-A runner that knows which tests a change can't affect, such as Tuist's coverage-based selective testing, can have the package remove them before XCTest runs them. Set `TEST_COVERAGE_ATTRIBUTION_SKIP_FILE` to the absolute path of a UTF-8 file that lists them, one per line. A relative path is read from the test process's working directory, such as the simulator app's, where the file isn't.
+A runner that knows which tests a change can't affect, such as Tuist's coverage-based selective testing, can have the package skip them before they run. Set `TEST_COVERAGE_ATTRIBUTION_SKIP_FILE` to the absolute path of a UTF-8 file that lists them, one per line. A relative path is read from the test process's working directory, such as the simulator app's, where the file isn't.
 
 ```text
 CheckoutTests/DiscountTests/testAppliesDiscount()
@@ -85,7 +97,7 @@ TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE="$PWD/skip.txt" xcodebuild test 
 - **Forgiving.** Blank lines and tests that don't exist are ignored. An unreadable file skips nothing. Skipping doesn't depend on `TEST_COVERAGE_ATTRIBUTION_DIR`.
 - **Where it applies.** `xcodebuild` passes the variable to the test process with the `TEST_RUNNER_` prefix: the app that hosts unit tests, and the runner of UI tests. It works with `test` and `test-without-building`, with `-only-testing`, and with parallel testing, where Xcode lists the tests, without the removed ones, before it hands them out to its clones. `swift test` reads it from the environment.
 - **What a skipped test looks like.** It's removed from the suite XCTest builds for its class, so it doesn't run and isn't in the result bundle. A class whose tests are all removed doesn't run its class `setUp` and `tearDown`. A class with tests left runs them as usual, class `setUp` included.
-- **XCTest only.** Swift Testing tests in the same target run as usual, even when listed.
+- **Swift Testing.** In a suite with the `.coverageAttribution` trait, a listed test is cancelled before it starts, every argument of a parameterized test included, and reported as skipped, whether tests run in parallel or not. The line names it as the records do: the Swift module, the innermost suite, and the test's display name when it declares one (`Applies a discount`), its function otherwise (`appliesDiscount()`). A display name with a `/` can't be listed. This needs Swift 6.3 (Xcode 26.4) or later: before, a trait can skip a test only by not running it, which reports it as passed, so the listed tests run. Listed tests in suites without the trait run too.
 
 ## Output
 
@@ -119,7 +131,7 @@ The deltas are what turns counters into lines. In the image's coverage mapping (
 
 ## Limitations
 
-- **Swift Testing isn't attributed or skipped.** See [Usage](#usage).
+- **Swift Testing needs the trait.** Tests in suites without it aren't attributed or skipped, tests that run at the same time get no evidence, and skipping them needs Swift 6.3. See [Usage](#usage).
 - **Skipping some of a class's tests uses a private method.** XCTest has no public way to remove tests from a class's suite, so the package uses `XCTestSuite`'s private `-setTests:`, which keeps the suite and the class `setUp` it runs. If a future Xcode removes it, a class with some tests listed runs all of them; a class with all of its tests listed is still skipped. A class that overrides `defaultTestSuite` without calling `super` isn't filtered.
 - **UI tests record which app process each test launched, not the app's counters.** The app's coverage comes from the profile Xcode writes for each app process (`<uuid>-<pid>.profraw` beside the run's `Coverage.profdata`). The pid is read from `XCUIApplication`'s private `processID` property; if a future Xcode removes it, nothing is written. Processes the app starts itself, such as extensions, aren't listed.
 - **Images loaded late aren't observed.** An image loaded after the first test starts, such as a framework the tests `dlopen`, is missing from the records.
