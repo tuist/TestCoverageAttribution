@@ -67,7 +67,7 @@ struct AttributionTests {
     /// Linked from a static archive, as Tuist links packages by default, an XCTest-only target
     /// references nothing in the package, so the linker drops the observer unless the target links
     /// with `-ObjC`, which loads every archive member that defines an Objective-C class. The skip
-    /// list is read by the same member: with `-ObjC`, the listed test doesn't run.
+    /// list is read by the same member: with `-ObjC`, the listed test doesn't run, and is reported.
     @Test(arguments: [false, true])
     func needsObjCToLinkTheObserverFromAStaticArchive(objC: Bool) throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
@@ -93,6 +93,7 @@ struct AttributionTests {
         #expect((test != nil) == objC)
         #expect(test?.ran("3sum") ?? !objC)
         #expect(!records.contains { $0.name == "testSkipped" })
+        #expect(try Skip.all(in: output) == (objC ? ["xctest ArchiveTests/ArchiveTests/testSkipped"] : []))
     }
 
     /// Two tests that run at the same time are both marked overlapped, including the one that
@@ -187,21 +188,6 @@ struct AttributionTests {
         try Self.execute(URL(filePath: "/usr/bin/xcrun"), arguments, environment: environment, directory: fixture)
         try inspect(output)
         return try Record.all(in: output)
-    }
-
-    /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
-    private func swiftPMCoverageReport() throws -> Data {
-        let output = try Self.execute(
-            URL(filePath: "/usr/bin/xcrun"),
-            [
-                "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
-                "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
-                "--show-codecov-path",
-            ],
-            environment: Self.cleanEnvironment,
-        )
-        let path = try #require(output.split(separator: "\n").last.map(String.init))
-        return try Data(contentsOf: URL(filePath: path))
     }
 
     /// This process's environment without the observer's variables, which the package's own test
@@ -323,5 +309,22 @@ struct AttributionTests {
             URL(filePath: "/usr/bin/xcrun"),
             ["simctl", "create", "TestCoverageAttribution iPhone", deviceType.identifier, runtime.identifier],
         )
+    }
+}
+
+extension AttributionTests {
+    /// The coverage report of the last SwiftPM run of `Fixtures/Example`.
+    private func swiftPMCoverageReport() throws -> Data {
+        let output = try Self.execute(
+            URL(filePath: "/usr/bin/xcrun"),
+            [
+                "swift", "test", "--package-path", Self.packageRoot.appending(path: "Fixtures/Example").path(),
+                "--scratch-path", Self.packageRoot.appending(path: ".build/fixtures/Example/swiftpm").path(),
+                "--show-codecov-path",
+            ],
+            environment: Self.cleanEnvironment,
+        )
+        let path = try #require(output.split(separator: "\n").last.map(String.init))
+        return try Data(contentsOf: URL(filePath: path))
     }
 }

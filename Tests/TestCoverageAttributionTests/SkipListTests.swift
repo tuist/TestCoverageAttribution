@@ -15,7 +15,8 @@ extension AttributionTests {
     /// run its class `setUp`, which crashes. The tests left run, after their class `setUp`. Built
     /// with Swift 6.3 or later, the listed Swift Testing tests of a suite with the trait are
     /// skipped, every argument of a parameterized one included; before, they run. A listed Swift
-    /// Testing test without the trait runs.
+    /// Testing test without the trait runs. `skipped.tsv` lists the tests each process removed or
+    /// cancelled, and no other.
     @Test(arguments: SkipListRun.allCases)
     func skipsTheListedTests(run: SkipListRun) throws {
         let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
@@ -40,7 +41,9 @@ extension AttributionTests {
         SkipUITests/SkippedUITests/testSkipped()
         """.write(to: skipList, atomically: true, encoding: .utf8)
         let resultBundle = scratch.appending(path: "Tests.xcresult")
-        try runSkipListScheme(run, skipList: skipList, resultBundle: resultBundle)
+        let output = scratch.appending(path: "output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try runSkipListScheme(run, skipList: skipList, resultBundle: resultBundle, output: output)
 
         #if compiler(>=6.3)
             let listedSwiftTesting = "Skipped"
@@ -60,23 +63,60 @@ extension AttributionTests {
             "AppTests/UntraitedSwiftTestingTests/runs() Passed",
             "SkipUITests/PartlySkippedUITests/testLaunch() Passed",
         ]))
+
+        let reports = try Skip.reports(in: output)
+        #expect(try Skip.all(in: output) == Self.expectedSkips(run), "\(reports)")
+    }
+
+    /// What `skipsTheListedTests` expects the processes to report skipping, named as the records
+    /// name the tests: XCTest tests as XCTest names them, without `()` or a bridged suffix. A shard
+    /// builds the suites of its `-only-testing` classes alone, and runs no Swift Testing test.
+    private static func expectedSkips(_ run: SkipListRun) -> [String] {
+        var skips = [
+            "xctest AppTests/PartlySkippedTests/testSkipped",
+            "xctest AppTests/PartlySkippedTests/testSkippedAsync",
+            "xctest AppTests/PartlySkippedTests/testSkippedThrowing",
+            "xctest AppTests/SkippedTests/testFirst",
+            "xctest AppTests/SkippedTests/testSecond",
+            "xctest SkipUITests/PartlySkippedUITests/testSkipped",
+        ]
+        if run != .shard {
+            skips.append("xctest SkipUITests/SkippedUITests/testSkipped")
+            #if compiler(>=6.3)
+                skips += [
+                    "swift-testing AppTests/SwiftTestingTests/skipped()",
+                    "swift-testing AppTests/SwiftTestingTests/skippedWithArguments(value:)",
+                ]
+            #endif
+        }
+        return skips.sorted()
     }
 
     /// Built with Swift 6.3 or later, the trait cancels a listed Swift Testing test before it
-    /// starts, so it leaves no record; before, it runs. The list names it by its display name.
+    /// starts, so it leaves no record, and reports it in `skipped.tsv`; before, it runs and the
+    /// process reports skipping nothing. The list names it by its display name.
     @Test func skipsTheListedSwiftTestingTests() throws {
+        var skips: [String] = []
+        var reports = 0
         let records = try runFixture(
             .swiftPM,
             attributing: true,
             skipList: "ExampleTests/MultiplicationTests/Multiplying by zero\n",
-        )
+        ) {
+            skips = try Skip.all(in: $0)
+            reports = try Skip.reports(in: $0).count
+        }
         let names = records.filter { $0.kind == .swiftTesting }.map(\.name)
 
         #expect(names.contains("multiply()"))
+        // The file is there even when nothing was skipped.
+        #expect(reports > 0)
         #if compiler(>=6.3)
             #expect(!names.contains("Multiplying by zero"))
+            #expect(skips == ["swift-testing ExampleTests/MultiplicationTests/Multiplying by zero"])
         #else
             #expect(names.contains("Multiplying by zero"))
+            #expect(skips.isEmpty)
         #endif
     }
 
@@ -113,15 +153,14 @@ extension AttributionTests {
     }
 
     /// Generates `Fixtures/UITests` and runs its `SkipList` scheme on an iPhone simulator, the way
-    /// `run` says, with the skip list.
-    private func runSkipListScheme(_ run: SkipListRun, skipList: URL, resultBundle: URL) throws {
+    /// `run` says, with the skip list, writing its output to `output`.
+    private func runSkipListScheme(_ run: SkipListRun, skipList: URL, resultBundle: URL, output: URL) throws {
         let fixture = Self.packageRoot.appending(path: "Fixtures/UITests")
         let derivedData = Self.packageRoot.appending(path: ".build/fixtures/UITests/skip-list")
         let simulator = try Self.iPhoneSimulator(fixture: Self.packageRoot.appending(path: "Fixtures/Example"))
         try Self.execute(URL(filePath: "/usr/bin/xcrun"), ["simctl", "bootstatus", simulator, "-b"])
         try Self.execute(URL(filePath: "/usr/bin/env"), ["tuist", "generate", "--no-open"], directory: fixture)
-        var environment = Self.cleanEnvironment
-        environment["TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE"] = skipList.path()
+        let environment = Self.skipListEnvironment(skipList: skipList, output: output)
         let destination = ["-destination", "id=\(simulator)"]
         let parallel = ["-parallel-testing-enabled", "YES", "-parallel-testing-worker-count", "2"]
 
@@ -167,6 +206,14 @@ extension AttributionTests {
                 timeout: Self.xcodebuildTimeout,
             )
         }
+    }
+
+    /// The environment xcodebuild passes the skip list and the output directory to the test processes in.
+    private static func skipListEnvironment(skipList: URL, output: URL) -> [String: String] {
+        cleanEnvironment.merging([
+            "TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE": skipList.path(),
+            "TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR": output.path(),
+        ]) { $1 }
     }
 
     /// How long one xcodebuild invocation may take before it is stopped and its output reported,

@@ -24,14 +24,17 @@
 //   <n>.names      the image's raw __llvm_prf_names section
 //   records.bin    one record per scope, see write_record()
 //   launches.tsv   one line per process a UI test launched, see record_launch()
+//   skipped.tsv    one line per test the skip list had removed or cancelled, see report_skipped()
 //
 // Skipping: $TEST_COVERAGE_ATTRIBUTION_SKIP_FILE (through xcodebuild,
 // TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_SKIP_FILE), an absolute path, names a file of tests not to
 // run: XCTest tests are removed before XCTest runs them, and the trait cancels Swift Testing tests.
-// See load_skip_list(). It works with or without recording.
+// See load_skip_list(). It works with or without recording; what it skipped is reported only with
+// $TEST_COVERAGE_ATTRIBUTION_DIR.
 #import <Foundation/Foundation.h>
 #import "TestCoverageAttributionObserver.h"
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
@@ -411,6 +414,9 @@ static bool is_class_suite(NSString *name) {
 // the listed ones.
 static NSSet<NSString *> *skipped_tests;
 static IMP original_default_test_suite;
+static int skip_report = -1;
+static char skip_report_path[PATH_MAX];
+static NSMutableSet<NSString *> *reported_skips;
 
 static NSString *skip_identifier(NSString *module, NSString *suite, NSString *name) {
     for (NSString *suffix in @[@"()", @"AndReturnError:", @"WithCompletionHandler:"]) {
@@ -445,21 +451,79 @@ bool test_coverage_attribution_is_skipped(const char *module, const char *suite,
     return identifier && [skipped_tests containsObject:identifier];
 }
 
+// skipped.tsv, beside the process's output: one line per test this process removed or cancelled,
+// `framework\tmodule\tsuite\tname`, framework `xctest` or `swift-testing`, named as the records
+// name it. A listed test that isn't in it ran here or wasn't part of the run, unless the file is
+// missing. The file is created as soon as the list is read, so an empty one says nothing was
+// skipped; a write that fails, or a name a line can't hold, removes it, and a reader then can't
+// tell what the process skipped rather than believing it skipped less. Each line is one write to a
+// file opened for appending, so a second copy of the library in the process, which opens it too,
+// never interleaves with this one. A test is written once per copy: XCTest builds a class's suite
+// more than once.
+static void open_skip_report(const char *dir) {
+    if (!skipped_tests || !dir || !*dir) return;
+    char file[PATH_MAX];
+    mkdir(dir, 0755);
+    snprintf(file, sizeof file, "%s/%d", dir, getpid());
+    mkdir(file, 0755);
+    snprintf(skip_report_path, sizeof skip_report_path, "%s/%d/skipped.tsv", dir, getpid());
+    skip_report = open(skip_report_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+}
+
+static void report_skipped(const char *framework, NSString *module, NSString *suite, NSString *name) {
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"\t\r\n"];
+    bool fits = true;
+    for (NSString *field in @[module, suite, name]) {
+        if ([field rangeOfCharacterFromSet:separators].location != NSNotFound) fits = false;
+    }
+    NSString *line = [NSString stringWithFormat:@"%s\t%@\t%@\t%@\n", framework, module, suite, name];
+    const char *bytes = line.UTF8String;
+    size_t length = bytes ? strlen(bytes) : 0;
+    pthread_mutex_lock(&lock);
+    if (skip_report >= 0) {
+        if (!reported_skips) reported_skips = [NSMutableSet set];
+        if (![reported_skips containsObject:line]) {
+            if (fits && bytes && write(skip_report, bytes, length) == (ssize_t)length) {
+                [reported_skips addObject:line];
+            } else {
+                close(skip_report);
+                skip_report = -1;
+                unlink(skip_report_path);
+            }
+        }
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+void test_coverage_attribution_report_skipped(const char *module, const char *suite, const char *name) {
+    if (!module || !suite || !name) return;
+    report_skipped("swift-testing", @(module), @(suite), @(name));
+}
+
 // A class's suite holds its tests. When some are listed, the suite is kept and its tests replaced
 // through XCTestSuite's private -setTests:, since the suite is what runs the class setUp and
 // tearDown; an XCTest without it runs every test. When all are listed, an empty suite takes its
-// place, so the class setUp doesn't run.
+// place, so the class setUp doesn't run. The removed tests are reported once the suite without
+// them is in place: an XCTest without -setTests: runs them, and reports none.
+static void report_removed(NSString *module, NSArray<NSArray<NSString *> *> *removed) {
+    for (NSArray<NSString *> *test in removed) report_skipped("xctest", module, test[0], test[1]);
+}
+
 static id suite_without_skipped_tests(Class test_class, id suite) {
     Class test_case = NSClassFromString(@"XCTestCase");
     NSArray *tests = [suite valueForKey:@"tests"];
     if (!test_case || ![tests isKindOfClass:[NSArray class]]) return suite;
     NSString *module = [NSBundle bundleForClass:test_class].bundleURL.lastPathComponent.stringByDeletingPathExtension ?: @"";
     NSMutableArray *kept = [NSMutableArray arrayWithCapacity:tests.count];
+    NSMutableArray<NSArray<NSString *> *> *removed = [NSMutableArray array];
     for (id test in tests) {
         if ([test isKindOfClass:test_case]) {
             NSString *test_suite, *method;
             split_xctest_name([test name], &test_suite, &method);
-            if ([skipped_tests containsObject:skip_identifier(module, test_suite, method)]) continue;
+            if ([skipped_tests containsObject:skip_identifier(module, test_suite, method)]) {
+                [removed addObject:@[test_suite, method]];
+                continue;
+            }
         }
         [kept addObject:test];
     }
@@ -468,11 +532,15 @@ static id suite_without_skipped_tests(Class test_class, id suite) {
         Class xctest_suite = NSClassFromString(@"XCTestSuite");
         SEL with_name = NSSelectorFromString(@"testSuiteWithName:");
         if (![xctest_suite respondsToSelector:with_name]) return suite;
-        return ((id (*)(Class, SEL, NSString *))objc_msgSend)(xctest_suite, with_name, [suite name]);
+        id empty = ((id (*)(Class, SEL, NSString *))objc_msgSend)(xctest_suite, with_name, [suite name]);
+        if (!empty) return suite;
+        report_removed(module, removed);
+        return empty;
     }
     SEL set_tests = NSSelectorFromString(@"setTests:");
     if (![suite respondsToSelector:set_tests]) return suite;
     ((void (*)(id, SEL, NSArray *))objc_msgSend)(suite, set_tests, kept);
+    report_removed(module, removed);
     return suite;
 }
 
@@ -587,6 +655,7 @@ static void register_observer(void) {
 static void start_skipping(void) {
     load_skip_list();
     if (!skipped_tests) return;
+    open_skip_report(getenv("TEST_COVERAGE_ATTRIBUTION_DIR"));
     if (NSClassFromString(@"XCTestCase")) {
         skip_listed_tests();
     } else {

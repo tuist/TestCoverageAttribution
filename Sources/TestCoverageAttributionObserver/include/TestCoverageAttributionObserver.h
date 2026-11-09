@@ -19,6 +19,11 @@ void test_coverage_attribution_scope_end(const char *module, const char *suite, 
 /// XCTest tests are.
 bool test_coverage_attribution_is_skipped(const char *module, const char *suite, const char *name);
 
+/// Reports that the test the skip list names won't run, in `skipped.tsv` beside the process's
+/// output: call it once the skip is certain, as right before cancelling the test. Does nothing
+/// unless the process has a skip list and `TEST_COVERAGE_ATTRIBUTION_DIR`.
+void test_coverage_attribution_report_skipped(const char *module, const char *suite, const char *name);
+
 #ifdef __cplusplus
 }
 #endif

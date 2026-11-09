@@ -5,7 +5,7 @@ import Testing
 
 /// Attributes the code each Swift Testing test executes to that test, by marking where each test
 /// starts and ends: Swift Testing has no observation center a library can join. It also skips the
-/// tests the skip list names, by cancelling them before they run.
+/// tests the skip list names, by cancelling them before they run, and reports the ones it cancels.
 ///
 /// The trait has to be added to every suite, and Swift Testing runs tests in parallel within a
 /// process by default, which leaves overlapping tests without evidence.
@@ -38,6 +38,7 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
                 // `Test.cancel` reports the test as skipped. Before Swift 6.3 a trait can only
                 // skip a test by not running it, which reports it as passed, so it runs instead.
                 if test_coverage_attribution_is_skipped(module, suite, name) {
+                    test_coverage_attribution_report_skipped(module, suite, name)
                     try Test.cancel("Listed in TEST_COVERAGE_ATTRIBUTION_SKIP_FILE", sourceLocation: test.sourceLocation)
                 }
             #endif
