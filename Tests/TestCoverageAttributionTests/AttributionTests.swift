@@ -340,3 +340,42 @@ extension AttributionTests {
         return try Data(contentsOf: URL(filePath: path))
     }
 }
+
+extension AttributionTests {
+    /// Single-byte counters (`-mllvm -enable-single-byte-coverage`) start at 0xFF and are cleared
+    /// once their code runs, so read as 8-byte counters they'd give wrong deltas. A process with such
+    /// an image records nothing: the observer removes what it wrote, whether the image's profile
+    /// version gives it away (`byte`) or, stripped of it, its counters section's size does
+    /// (`byte-stripped`), and the tests run as usual. With clang's default counters (`word`) the same
+    /// bundle records each test.
+    @Test(arguments: ["word", "byte", "byte-stripped"])
+    func recordsNothingForAnImageWithSingleByteCounters(counters: String) throws {
+        let scratch = FileManager.default.temporaryDirectory.appending(path: "TestCoverageAttribution-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let output = scratch.appending(path: "output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var environment = Self.cleanEnvironment
+        environment["TEST_COVERAGE_ATTRIBUTION_DIR"] = output.path()
+
+        try Self.execute(
+            Self.packageRoot.appending(path: "Fixtures/ByteCoverage/run.sh"),
+            [scratch.appending(path: "build").path(), counters],
+            environment: environment,
+        )
+
+        // The observer loaded: it made the process's directory.
+        let processes = try FileManager.default.contentsOfDirectory(at: output, includingPropertiesForKeys: nil)
+        try #require(processes.count == 1)
+        let files = try FileManager.default.contentsOfDirectory(atPath: processes[0].path())
+        let records = try Record.all(in: output)
+        if counters == "word" {
+            let classify = try #require(records.first { $0.kind == .xcTest && $0.name == "testClassify" })
+            let sum = try #require(records.first { $0.kind == .xcTest && $0.name == "testSum" })
+            #expect(classify.functions.contains("classify") && !classify.functions.contains("sum"))
+            #expect(sum.functions.contains("sum") && !sum.functions.contains("classify"))
+        } else {
+            #expect(records.isEmpty)
+            #expect(!files.contains("images.tsv") && !files.contains("records.bin"))
+        }
+    }
+}

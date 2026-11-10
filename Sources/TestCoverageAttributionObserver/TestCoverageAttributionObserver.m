@@ -4,7 +4,9 @@
 // by how much, while the tests run. It never calls the LLVM profile runtime, whose symbols are
 // hidden per image: it finds the `__llvm_prf_cnts` section of every instrumented image, copies
 // it when a scope starts, and when the scope ends records the counters that changed. Counters
-// are never zeroed, so Xcode's own coverage report is untouched.
+// are never zeroed, so Xcode's own coverage report is untouched. The counters are read as 8-byte
+// counts, so a process with an image of single-byte counters records nothing, see
+// has_byte_counters().
 //
 // Nothing happens unless $TEST_COVERAGE_ATTRIBUTION_DIR names where to write (through xcodebuild,
 // TEST_RUNNER_TEST_COVERAGE_ATTRIBUTION_DIR), so a test target can link it unconditionally.
@@ -37,6 +39,7 @@
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
+#include <mach-o/nlist.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
@@ -113,8 +116,54 @@ static bool dump_section(const struct mach_header_64 *h, const char *name, unsig
     return fclose(f) == 0 && written;
 }
 
+// The bit of LLVM's profile version that marks single-byte counters (VARIANT_MASK_BYTE_COVERAGE in
+// InstrProfData.inc).
+static const uint64_t kByteCoverage = 1ULL << 60;
+
+// The address of a symbol the image defines, local ones included, from its symbol table; NULL when
+// the table is stripped of it.
+static const void *image_symbol(const struct mach_header_64 *h, intptr_t slide, const char *name) {
+    const struct segment_command_64 *linkedit = NULL;
+    const struct symtab_command *symtab = NULL;
+    const uint8_t *command = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *load = (const struct load_command *)command;
+        if (load->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *segment = (const struct segment_command_64 *)load;
+            if (strncmp(segment->segname, SEG_LINKEDIT, sizeof segment->segname) == 0) linkedit = segment;
+        } else if (load->cmd == LC_SYMTAB) {
+            symtab = (const struct symtab_command *)load;
+        }
+        command += load->cmdsize;
+    }
+    if (!linkedit || !symtab) return NULL;
+    uintptr_t base = (uintptr_t)slide + linkedit->vmaddr - linkedit->fileoff;
+    const struct nlist_64 *symbols = (const struct nlist_64 *)(base + symtab->symoff);
+    const char *strings = (const char *)(base + symtab->stroff);
+    for (uint32_t i = 0; i < symtab->nsyms; i++) {
+        if ((symbols[i].n_type & (N_STAB | N_TYPE)) != N_SECT || symbols[i].n_un.n_strx >= symtab->strsize) continue;
+        if (strcmp(strings + symbols[i].n_un.n_strx, name) == 0) return (const void *)(symbols[i].n_value + slide);
+    }
+    return NULL;
+}
+
+// Whether the image's counters are single bytes, as LLVM's single-byte coverage mode
+// (`-mllvm -enable-single-byte-coverage`) makes them: each starts at 0xFF and is cleared once its
+// code runs, so read as 8-byte counters they would give wrong deltas, and the reader's function
+// table can't place them. The image's profile version says so, as it tells the profile runtime:
+// clang defines it in single-byte mode, and otherwise the profile runtime the image links does.
+// It's hidden, so it's looked up in the symbol table. A stripped image has no symbol to go by, but
+// a section that isn't a whole number of 8-byte counters still gives it away.
+static bool has_byte_counters(const struct mach_header_64 *h, intptr_t slide, unsigned long counters_size) {
+    if (counters_size % sizeof(uint64_t) != 0) return true;
+    const uint64_t *version = image_symbol(h, slide, "___llvm_profile_raw_version");
+    return version && (*version & kByteCoverage) != 0;
+}
+
 // Images loaded after the first scope (a framework the tests dlopen late) are not picked up;
-// their code is then missing from the evidence, which the per-target floor covers.
+// their code is then missing from the evidence, which the per-target floor covers. An image with
+// single-byte counters stops recording: leaving it out would give its code's tests evidence that
+// misses it, which reads as tests that didn't run it.
 static void discover_images(void) {
     if (images_discovered) return;
     images_discovered = true;
@@ -133,6 +182,10 @@ static void discover_images(void) {
         unsigned long data_size = 0;
         const uint8_t *data = section(h, "__llvm_prf_data", &data_size);
         if (!data) continue;
+        if (has_byte_counters(h, _dyld_get_image_vmaddr_slide(i), size)) {
+            ok = false;
+            break;
+        }
         instrumented_image *img = &images[images_count];
         img->counters = (uint64_t *)cnts;
         img->snapshot = malloc(size);

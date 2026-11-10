@@ -9,11 +9,13 @@ A Swift package that test targets link to record which coverage counters each te
   - `Fixtures/Example` - with SwiftPM, xcodebuild on macOS and xcodebuild on an iOS simulator.
   - `Fixtures/Concurrency` - the overlapping, nested-trait and failure cases, in a package of their own since Swift Testing runs suites in parallel across the process.
   - `Fixtures/StaticArchive` - links the observer from a static archive, with and without `-ObjC`, into a bundle with a Swift and an Objective-C test class.
+  - `Fixtures/ByteCoverage` - an Objective-C bundle and the C code it tests, built with 8-byte counters and with single-byte ones (`-mllvm -enable-single-byte-coverage`), with and without local symbols, by `run.sh`; the observer records the first and nothing for the others.
   - `Fixtures/UITests` - an app, its UI tests and its hosted unit tests. It's a Tuist project (`Project.swift`), because a UI test needs an app target and SwiftPM can't build apps; `Launches.swift` reads `launches.tsv`, and `SkipListTests.swift` runs the `SkipList` scheme serially, in parallel and as a shard and reads the result bundle.
 
 ## Rules
 - Never crash or block the test process: every failure path returns and the tests run as if nothing were linked.
 - Never reset or write the counters.
+- Counters are read as 8-byte counts only: an image whose counters are anything else (`has_byte_counters()`) stops recording for the process rather than being read or left out.
 - Changing `records.bin`: update `write_record()`, `Records.swift`, the README and Tuist's reader together, and bump `kRecordVersion` when a record gains a field.
 - Changing `launches.tsv`: update `write_launch()`, `Launches.swift`, the README and Tuist's reader (`CoverageObserverOutput.parseLaunches`) together.
 - Changing the skip list format: update `load_skip_list()`, `SkipListTests.swift`, the README and Tuist's writer together.
