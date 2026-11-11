@@ -445,9 +445,11 @@ static bool is_class_suite(NSString *name) {
 // Skip list: one test per line, `module/suite/name`, the way xcodebuild's -skip-testing names a
 // test and the records name it: the test bundle, the class without its Swift module, and the test
 // as the result bundle names it (`testAdd()`) or as its selector (`testAdd`,
-// `testAddAndReturnError:`, `testAddWithCompletionHandler:`). Blank lines, lines without exactly
-// three components (a whole module is skipped with -skip-testing, and a suite can gain tests the
-// list doesn't know) and tests that don't exist are ignored. An unreadable file skips nothing.
+// `testAddAndReturnError:`, `testAddWithCompletionHandler:`). A Swift Testing suite nested in
+// another is its whole path, `module/Outer/Inner/name`: the first component is the module, the
+// last the test, and everything between the suite. Blank lines, lines with fewer than three
+// components (a whole module is skipped with -skip-testing, and a suite can gain tests the list
+// doesn't know) and tests that don't exist are ignored. An unreadable file skips nothing.
 //
 // The listed tests are removed from +[XCTestCase defaultTestSuite], the suite XCTest builds for
 // each class, both when it lists the tests (parallel runs hand the listed tests out to their
@@ -479,10 +481,9 @@ static void load_skip_list(void) {
     for (NSString *line in [contents componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
         NSArray<NSString *> *components = [[line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]
             componentsSeparatedByString:@"/"];
-        if (components.count != 3 || components[0].length == 0 || components[1].length == 0
-            || components[2].length == 0)
-            continue;
-        [tests addObject:skip_identifier(components[0], components[1], components[2])];
+        if (components.count < 3 || [components containsObject:@""]) continue;
+        NSString *suite = [[components subarrayWithRange:NSMakeRange(1, components.count - 2)] componentsJoinedByString:@"/"];
+        [tests addObject:skip_identifier(components.firstObject, suite, components.lastObject)];
     }
     if (tests.count > 0) skipped_tests = tests;
 }
