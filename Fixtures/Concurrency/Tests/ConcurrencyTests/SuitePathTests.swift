@@ -27,6 +27,10 @@ extension SuitePathTests {
         @Test func inExtension() {
             #expect(Steps.third() == 3)
         }
+
+        @Test(.unskippable) func unskippable() {
+            #expect(Steps.third() == 3)
+        }
     }
 }
 

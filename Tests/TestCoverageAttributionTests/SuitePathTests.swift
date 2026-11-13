@@ -14,6 +14,7 @@ extension AttributionTests {
             "SuitePathNamespace/Inner/inNamespace()",
             "SuitePathNamespace/Inner/unskippable()",
             "SuitePathTests/InExtension/inExtension()",
+            "SuitePathTests/InExtension/unskippable()",
             "SuitePathTests/Nested/nested()",
             "SuitePathTests/Nested/unskippable()",
             "SuitePathTests/topLevel()",
@@ -21,7 +22,8 @@ extension AttributionTests {
     }
 
     /// The list names a Swift Testing test under every suite it's nested in, outermost first, as
-    /// the records and `-skip-testing` do; its innermost suite alone names nothing. Built with Swift
+    /// the records and `-skip-testing` do, or, as Tuist did before it recorded whole paths, under
+    /// its innermost suite alone; a path whose outer suites differ names nothing. Built with Swift
     /// 6.3 or later, the listed tests leave no record; before, they run. Either way
     /// `unskippable.tsv` says which unskippable tests the list names.
     @Test func skipsTheListedSwiftTestingTestsOfNestedSuites() throws {
@@ -35,20 +37,26 @@ extension AttributionTests {
             ConcurrencyTests/SuitePathTests/topLevel()
             ConcurrencyTests/SuitePathTests/Nested/nested()
             ConcurrencyTests/SuitePathTests/Nested/unskippable()
-            ConcurrencyTests/SuitePathTests/InExtension/inExtension()
+            ConcurrencyTests/InExtension/inExtension()
             ConcurrencyTests/SuitePathNamespace/Inner/inNamespace()
             ConcurrencyTests/Inner/unskippable()
+            ConcurrencyTests/Elsewhere/InExtension/unskippable()
             """,
         ) { unskippable = try Self.unskippableTests(in: $0) }
         let tests = records.filter { $0.kind == .swiftTesting }.map { "\($0.suite)/\($0.name)" }.sorted()
 
         #if compiler(>=6.3)
-            #expect(tests == ["SuitePathNamespace/Inner/unskippable()", "SuitePathTests/Nested/unskippable()"])
+            #expect(tests == [
+                "SuitePathNamespace/Inner/unskippable()",
+                "SuitePathTests/InExtension/unskippable()",
+                "SuitePathTests/Nested/unskippable()",
+            ])
         #else
-            #expect(tests.count == 6)
+            #expect(tests.count == 7)
         #endif
         #expect(unskippable == [
-            "ConcurrencyTests\tSuitePathNamespace/Inner\tunskippable()\t0",
+            "ConcurrencyTests\tSuitePathNamespace/Inner\tunskippable()\t1",
+            "ConcurrencyTests\tSuitePathTests/InExtension\tunskippable()\t0",
             "ConcurrencyTests\tSuitePathTests/Nested\tunskippable()\t1",
         ])
     }

@@ -489,10 +489,17 @@ static void load_skip_list(void) {
 }
 
 // The list is read once, by the constructor, and never changes after: no lock is needed.
+// A test in a nested suite also matches a line that names it by its innermost suite alone
+// (`module/Inner/name`), as Tuist did before it recorded the whole path.
 bool test_coverage_attribution_is_skipped(const char *module, const char *suite, const char *name) {
     if (!skipped_tests || !module || !suite || !name) return false;
-    NSString *identifier = skip_identifier(@(module), @(suite), @(name));
-    return identifier && [skipped_tests containsObject:identifier];
+    NSString *module_name = @(module), *suite_path = @(suite), *test_name = @(name);
+    if (!module_name || !suite_path || !test_name) return false;
+    if ([skipped_tests containsObject:skip_identifier(module_name, suite_path, test_name)]) return true;
+    NSRange slash = [suite_path rangeOfString:@"/" options:NSBackwardsSearch];
+    if (slash.location == NSNotFound) return false;
+    NSString *innermost = [suite_path substringFromIndex:slash.location + 1];
+    return [skipped_tests containsObject:skip_identifier(module_name, innermost, test_name)];
 }
 
 // Unskippable XCTest tests: a class marks them with class methods the observer looks up by name, so
