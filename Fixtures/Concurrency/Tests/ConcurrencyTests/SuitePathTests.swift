@@ -2,9 +2,9 @@ import Concurrency
 import TestCoverageAttribution
 import Testing
 
-/// A suite at the top level, a suite nested in it, one in an extension of it and one in an enum
-/// namespace: their tests are recorded and listed under every suite they're nested in, outermost
-/// first, as the result bundle names them.
+/// A suite at the top level, a suite nested in it, one nested ten levels deep, one in an extension
+/// of it and one in an enum namespace: their tests are recorded and listed under every suite
+/// they're nested in, outermost first, as the result bundle names them.
 @Suite(.coverageAttribution, .serialized)
 struct SuitePathTests {
     @Test func topLevel() {
@@ -18,6 +18,30 @@ struct SuitePathTests {
 
         @Test(.unskippable) func unskippable() {
             #expect(Steps.second() == 2)
+        }
+
+        enum Third {
+            enum Fourth {
+                enum Fifth {
+                    enum Sixth {
+                        enum Seventh {
+                            enum Eighth {
+                                enum Ninth {
+                                    struct Tenth {
+                                        @Test func listedByWholePath() {
+                                            #expect(Steps.first() == 1)
+                                        }
+
+                                        @Test func listedByInnermostSuite() {
+                                            #expect(Steps.first() == 1)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
