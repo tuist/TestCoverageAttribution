@@ -31,9 +31,7 @@ public struct CoverageAttributionTrait: TestTrait, SuiteTrait, TestScoping {
             }
             let components = test.id.nameComponents
             let module = test.id.moduleName
-            // Every suite the test is nested in, outermost first (`Outer/Inner`), the way the result
-            // bundle and `-only-testing` name it; the innermost alone can't tell nested suites apart.
-            let suite = components.dropLast().joined(separator: "/")
+            let suite = components.count >= 2 ? components[components.count - 2] : ""
             // The name the result bundle reports the test under, which is the test's identity
             // everywhere else: its display name when it declares one, its function otherwise.
             let name = test.displayName ?? components.last ?? test.name

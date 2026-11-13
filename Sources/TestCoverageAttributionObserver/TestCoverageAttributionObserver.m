@@ -445,11 +445,9 @@ static bool is_class_suite(NSString *name) {
 // Skip list: one test per line, `module/suite/name`, the way xcodebuild's -skip-testing names a
 // test and the records name it: the test bundle, the class without its Swift module, and the test
 // as the result bundle names it (`testAdd()`) or as its selector (`testAdd`,
-// `testAddAndReturnError:`, `testAddWithCompletionHandler:`). A Swift Testing suite nested in
-// another is its whole path, `module/Outer/Inner/name`: the first component is the module, the
-// last the test, and everything between the suite. Blank lines, lines with fewer than three
-// components (a whole module is skipped with -skip-testing, and a suite can gain tests the list
-// doesn't know) and tests that don't exist are ignored. An unreadable file skips nothing.
+// `testAddAndReturnError:`, `testAddWithCompletionHandler:`). Blank lines, lines without exactly
+// three components (a whole module is skipped with -skip-testing, and a suite can gain tests the
+// list doesn't know) and tests that don't exist are ignored. An unreadable file skips nothing.
 //
 // The listed tests are removed from +[XCTestCase defaultTestSuite], the suite XCTest builds for
 // each class, both when it lists the tests (parallel runs hand the listed tests out to their
@@ -481,25 +479,19 @@ static void load_skip_list(void) {
     for (NSString *line in [contents componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
         NSArray<NSString *> *components = [[line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]
             componentsSeparatedByString:@"/"];
-        if (components.count < 3 || [components containsObject:@""]) continue;
-        NSString *suite = [[components subarrayWithRange:NSMakeRange(1, components.count - 2)] componentsJoinedByString:@"/"];
-        [tests addObject:skip_identifier(components.firstObject, suite, components.lastObject)];
+        if (components.count != 3 || components[0].length == 0 || components[1].length == 0
+            || components[2].length == 0)
+            continue;
+        [tests addObject:skip_identifier(components[0], components[1], components[2])];
     }
     if (tests.count > 0) skipped_tests = tests;
 }
 
 // The list is read once, by the constructor, and never changes after: no lock is needed.
-// A test in a nested suite also matches a line that names it by its innermost suite alone
-// (`module/Inner/name`), as Tuist did before it recorded the whole path.
 bool test_coverage_attribution_is_skipped(const char *module, const char *suite, const char *name) {
     if (!skipped_tests || !module || !suite || !name) return false;
-    NSString *module_name = @(module), *suite_path = @(suite), *test_name = @(name);
-    if (!module_name || !suite_path || !test_name) return false;
-    if ([skipped_tests containsObject:skip_identifier(module_name, suite_path, test_name)]) return true;
-    NSRange slash = [suite_path rangeOfString:@"/" options:NSBackwardsSearch];
-    if (slash.location == NSNotFound) return false;
-    NSString *innermost = [suite_path substringFromIndex:slash.location + 1];
-    return [skipped_tests containsObject:skip_identifier(module_name, innermost, test_name)];
+    NSString *identifier = skip_identifier(@(module), @(suite), @(name));
+    return identifier && [skipped_tests containsObject:identifier];
 }
 
 // Unskippable XCTest tests: a class marks them with class methods the observer looks up by name, so
