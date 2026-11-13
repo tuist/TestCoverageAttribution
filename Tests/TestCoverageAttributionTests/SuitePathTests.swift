@@ -3,8 +3,8 @@ import Testing
 /// Swift Testing suites nested in others: `Fixtures/Concurrency`'s `SuitePathTests.swift`.
 extension AttributionTests {
     /// A Swift Testing test is recorded under every suite it's nested in, outermost first, as the
-    /// result bundle and `-only-testing` name it: a suite nested in another, in an extension of it
-    /// or in an enum namespace.
+    /// result bundle and `-only-testing` name it: a suite nested in another, ten levels deep, in an
+    /// extension of it or in an enum namespace.
     @Test func recordsSwiftTestingTestsUnderTheirWholeSuitePath() throws {
         let records = try runFixture(.swiftPM, attributing: true, fixture: "Concurrency", filter: "SuitePath")
         let tests = records.filter { $0.kind == .swiftTesting }
@@ -15,6 +15,8 @@ extension AttributionTests {
             "SuitePathNamespace/Inner/unskippable()",
             "SuitePathTests/InExtension/inExtension()",
             "SuitePathTests/InExtension/unskippable()",
+            "SuitePathTests/Nested/Third/Fourth/Fifth/Sixth/Seventh/Eighth/Ninth/Tenth/listedByInnermostSuite()",
+            "SuitePathTests/Nested/Third/Fourth/Fifth/Sixth/Seventh/Eighth/Ninth/Tenth/listedByWholePath()",
             "SuitePathTests/Nested/nested()",
             "SuitePathTests/Nested/unskippable()",
             "SuitePathTests/topLevel()",
@@ -41,6 +43,8 @@ extension AttributionTests {
             ConcurrencyTests/SuitePathNamespace/Inner/inNamespace()
             ConcurrencyTests/Inner/unskippable()
             ConcurrencyTests/Elsewhere/InExtension/unskippable()
+            ConcurrencyTests/SuitePathTests/Nested/Third/Fourth/Fifth/Sixth/Seventh/Eighth/Ninth/Tenth/listedByWholePath()
+            ConcurrencyTests/Tenth/listedByInnermostSuite()
             """,
         ) { unskippable = try Self.unskippableTests(in: $0) }
         let tests = records.filter { $0.kind == .swiftTesting }.map { "\($0.suite)/\($0.name)" }.sorted()
@@ -52,7 +56,7 @@ extension AttributionTests {
                 "SuitePathTests/Nested/unskippable()",
             ])
         #else
-            #expect(tests.count == 7)
+            #expect(tests.count == 9)
         #endif
         #expect(unskippable == [
             "ConcurrencyTests\tSuitePathNamespace/Inner\tunskippable()\t1",
