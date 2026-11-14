@@ -46,8 +46,8 @@ extension AttributionTests {
         AppTests/SwiftTestingTests/unskippable()
         AppTests/UnskippableSwiftTestingTests/runs()
         AppTests/UnskippableSwiftTestingTests/skipped()
-        AppTests/SkippableTests/skipped()
-        AppTests/SkippableTests/unskippable()
+        AppTests/UnskippableSwiftTestingTests/SkippableTests/skipped()
+        AppTests/UnskippableSwiftTestingTests/SkippableTests/unskippable()
         AppTests/UntraitedSwiftTestingTests/runs()
         AppTests/UnlistedTests
         AppTests/MissingTests/testMissing()
@@ -102,7 +102,7 @@ extension AttributionTests {
 
     /// The lines `skipsTheListedTests` expects in `unskippable.tsv`, every test listed, named as
     /// the records name them: XCTest tests as XCTest names them, without `()` or a bridged suffix,
-    /// and Swift Testing tests under their innermost suite.
+    /// and Swift Testing tests under every suite they're nested in.
     private static func expectedUnskippable(_ run: SkipListRun) -> [String] {
         var lines = [
             "AppTests\tPartlySkippedTests\ttestUnskippable\t1",
@@ -113,7 +113,7 @@ extension AttributionTests {
         ]
         if run != .shard {
             lines += [
-                "AppTests\tSkippableTests\tunskippable()\t1",
+                "AppTests\tUnskippableSwiftTestingTests/SkippableTests\tunskippable()\t1",
                 "AppTests\tSwiftTestingTests\tunskippable()\t1",
                 "AppTests\tUnskippableSwiftTestingTests\truns()\t1",
             ]
@@ -133,8 +133,8 @@ extension AttributionTests {
             skipList: """
             ExampleTests/MultiplicationTests/Multiplying by zero
             ExampleTests/MultiplicationTests/multiplyByOne()
-            ExampleTests/UnskippableMultiplicationTests/multiplyNegatives()
-            ExampleTests/UnskippableMultiplicationTests/square()
+            ExampleTests/MultiplicationTests/UnskippableMultiplicationTests/multiplyNegatives()
+            ExampleTests/MultiplicationTests/UnskippableMultiplicationTests/square()
             """,
         ) { unskippable = try Self.unskippableTests(in: $0) }
         let names = records.filter { $0.kind == .swiftTesting }.map(\.name)
@@ -154,8 +154,8 @@ extension AttributionTests {
         #endif
         #expect(unskippable == [
             "ExampleTests\tMultiplicationTests\tmultiplyByOne()\t1",
-            "ExampleTests\tUnskippableMultiplicationTests\tmultiplyByMinusOne()\t0",
-            "ExampleTests\tUnskippableMultiplicationTests\tmultiplyNegatives()\t1",
+            "ExampleTests\tMultiplicationTests/UnskippableMultiplicationTests\tmultiplyByMinusOne()\t0",
+            "ExampleTests\tMultiplicationTests/UnskippableMultiplicationTests\tmultiplyNegatives()\t1",
         ])
     }
 
