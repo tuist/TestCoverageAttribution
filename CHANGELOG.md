@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-11-18
+### Details
+#### Miscellaneous Tasks
+- Run the newest-Xcode skip list on tuist-macos by @ampagent
+
 ## [0.5.3] - 2026-11-14
 ### Details
 #### Bug Fixes
@@ -115,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## New Contributors
 * @esnunes made their first contribution
 * @renovate[bot] made their first contribution in [#17](https://github.com/tuist/TestCoverageAttribution/pull/17)
+[0.5.4]: https://github.com/tuist/TestCoverageAttribution/compare/0.5.3..0.5.4
 [0.5.3]: https://github.com/tuist/TestCoverageAttribution/compare/0.5.2..0.5.3
 [0.5.2]: https://github.com/tuist/TestCoverageAttribution/compare/0.5.1..0.5.2
 [0.5.1]: https://github.com/tuist/TestCoverageAttribution/compare/0.5.0..0.5.1
